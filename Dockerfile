@@ -50,10 +50,13 @@ ENV VS_VERSION=${VS_VERSION} \
 
 RUN mkdir -p /data && chown "$APP_UID" /data
 VOLUME ["/data"]
+COPY --chmod=755 docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 # 8080: management web UI (publish as host port 80). 42420: game server.
 EXPOSE 8080 42420/tcp 42420/udp
 
-USER $APP_UID
+# Starts as root only to switch to PUID:PGID (default 1654, the image's app user); see
+# docker-entrypoint.sh. Nothing else runs as root.
 WORKDIR /app
-ENTRYPOINT ["dotnet", "/app/VintageStoryServerManager.Web.dll"]
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+CMD ["dotnet", "/app/VintageStoryServerManager.Web.dll"]

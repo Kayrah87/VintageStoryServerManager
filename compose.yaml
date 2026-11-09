@@ -14,6 +14,9 @@ services:
       - "42420:42420/tcp"  # game server
       - "42420:42420/udp"
     environment:
+      # Run as this host user so the files in ./data belong to it (default 1654).
+      # PUID: "1000"
+      # PGID: "1000"
       # First admin account (only used when there are no users yet).
       # Leave the password unset to have one generated and printed to the log.
       Admin__Username: admin

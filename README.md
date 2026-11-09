@@ -50,13 +50,19 @@ Everything that should outlive the container lives under `/data`. Mount a host f
 └── backups/        backup zips
 ```
 
-`/data/vintagestory` uses the standard Vintage Story data-path layout. To migrate an existing server, copy its data folder (the one containing `Saves/`, `Mods/` and `serverconfig.json`) into `./data/vintagestory/`.
+`/data/vintagestory` uses the standard Vintage Story data-path layout. To migrate an existing server, copy its data folder (the one containing `Saves/`, `Mods/` and `serverconfig.json`) into `./data/vintagestory/`. A `serverconfig.json` written by another image (for example one that kept its data in `/vintagestory/data`) is pointed at the new location automatically when the server starts; the original is kept as `serverconfig.before-path-fix.json`.
 
-The container runs as the non-root `app` user (UID `1654`). A bind-mounted host folder must be writable by that UID:
+### File ownership (PUID/PGID)
 
-```bash
-mkdir -p data && sudo chown -R 1654:1654 data
+The manager and the game run as `PUID:PGID`, so the files in `/data` can belong to a user on your host. Set them to that user's IDs (`id -u` and `id -g`):
+
+```yaml
+    environment:
+      PUID: "1000"
+      PGID: "1000"
 ```
+
+Without them, the image's built-in `app` user (`1654:1654`) is used. The container starts as root only to switch to that user. An empty data folder is given to `PUID:PGID` automatically; existing data is never re-owned, and the container stops with an explanation if it can't write to it. Data from an image that also used `PUID`/`PGID` keeps working with the same values.
 
 ## Running
 
@@ -83,11 +89,11 @@ Keep `stop_grace_period: 2m` (as in `compose.yaml`) so the game server has time 
 
 The image runs under rootless Podman as it is. Two differences from Docker:
 
-- **Data folder ownership:** use `podman unshare chown` instead of `sudo chown`. Rootless Podman maps container UIDs into your own user namespace.
+- **Data folder ownership:** rootless Podman maps container UIDs into your own user namespace. Leave an empty data folder to the container, or use `podman unshare chown` instead of `sudo chown` for existing data.
 - **Ports:** if something on the host already uses port 80 or 8080 (for example a local dev proxy), publish the UI on another port such as 8090.
 
 ```bash
-mkdir -p ~/vs-test/data && podman unshare chown 1654:1654 ~/vs-test/data
+mkdir -p ~/vs-test/data
 
 podman build -t vssm:dev .
 
@@ -139,6 +145,7 @@ Five wrong passwords in a row lock an account for 15 minutes. An admin can unloc
 
 | Variable | Default | Description |
 |---|---|---|
+| `PUID` / `PGID` | `1654` | User and group IDs the manager and game run as; see [File ownership](#file-ownership-puidpgid) |
 | `DataPaths__Root` | `/data` | Root of the data volume |
 | `DataPaths__GameInstallDirectory` | `/opt/vintagestory` | Bundled Vintage Story server install |
 | `Server__AutoStart` | `true` | Start the game server with the container |
