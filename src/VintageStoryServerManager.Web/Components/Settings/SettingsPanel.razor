@@ -1,0 +1,433 @@
+@using System.Text.Json.Nodes
+@using VintageStoryServerManager.Core.Configuration
+@using VintageStoryServerManager.Core.WorldSettings
+@using VintageStoryServerManager.Infrastructure.Config
+@using VintageStoryServerManager.Infrastructure.WorldSettings
+@implements IDisposable
+
+@inject WorldSettingsService WorldSettings
+@inject ServerConfigService Config
+@inject SettingsApplier Applier
+@inject IGameServer Server
+@inject ISnackbar Snackbar
+@inject IDialogService Dialogs
+
+<MudPaper Class="pa-3 mb-4 d-flex flex-wrap align-center gap-3 settings-toolbar" Elevation="2">
+    <MudChip T="string" Color="@ServerDisplay.StatusColor(snapshot.Status)" Variant="Variant.Filled" Size="Size.Small">@ServerDisplay.StatusLabel(snapshot.Status)</MudChip>
+    @if (ChangeCount > 0)
+    {
+        <MudText Typo="Typo.body2"><strong>@ChangeCount</strong> unsaved change@(ChangeCount == 1 ? "" : "s")</MudText>
+    }
+    else
+    {
+        <MudText Typo="Typo.body2" Color="Color.Secondary">No unsaved changes</MudText>
+    }
+    <MudSpacer />
+    <MudButton Variant="Variant.Text" Disabled="busy || ChangeCount == 0" OnClick="Discard">Discard</MudButton>
+    @if (IsRunning)
+    {
+        @if (serverEdits.Count == 0)
+        {
+            <MudButton Variant="Variant.Outlined" Disabled="busy || ChangeCount == 0" OnClick="() => SaveAsync(restart: false)">Save, restart later</MudButton>
+        }
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.RestartAlt" Disabled="busy || ChangeCount == 0"
+                   OnClick="() => SaveAsync(restart: true)">Save and restart</MudButton>
+    }
+    else
+    {
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Save" Disabled="busy || serverEdits.Count == 0"
+                   OnClick="() => SaveAsync(restart: false)">Save</MudButton>
+    }
+</MudPaper>
+
+@if (ChangeCount > 0)
+{
+    @* Always reachable while scrolling through the long list of settings. *@
+    <MudPaper Class="settings-savebar d-flex flex-wrap align-center gap-2 pa-3" Elevation="8">
+        <MudText Typo="Typo.body2"><strong>@ChangeCount</strong> unsaved change@(ChangeCount == 1 ? "" : "s")</MudText>
+        <MudButton Variant="Variant.Text" Size="Size.Small" Disabled="busy" OnClick="Discard">Discard</MudButton>
+        @if (IsRunning)
+        {
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.RestartAlt" Disabled="busy"
+                       OnClick="() => SaveAsync(restart: true)">Save and restart</MudButton>
+        }
+        else
+        {
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.Save" Disabled="busy || serverEdits.Count == 0"
+                       OnClick="() => SaveAsync(restart: false)">Save</MudButton>
+        }
+    </MudPaper>
+}
+
+@if (busyMessage is not null)
+{
+    <MudProgressLinear Color="Color.Primary" Indeterminate="true" Class="mb-1" />
+    <MudText Typo="Typo.body2" Class="mb-3">@busyMessage</MudText>
+}
+
+<MudGrid>
+    <MudItem xs="12" lg="5">
+        <MudPaper Class="pa-4" Elevation="1">
+            <MudText Typo="Typo.h6">Server</MudText>
+            <MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-3">
+                From <code>serverconfig.json</code>. @(IsRunning ? "Saving stops the server, writes the file and starts it again." : "")
+            </MudText>
+            @if (serverConfig is null)
+            {
+                <MudAlert Severity="Severity.Info" Dense="true">There's no serverconfig.json yet. Start the server once to create it.</MudAlert>
+            }
+            else
+            {
+                @foreach (var field in ServerSettingFields.All)
+                {
+                    var edited = serverEdits.ContainsKey(field.Key);
+                    <div class="setting-row @(edited ? "setting-row-edited" : "")">
+                        @switch (field.Kind)
+                        {
+                            case ServerSettingKind.Bool:
+                                <MudSwitch T="bool" Value="ServerBool(field)" ValueChanged="v => SetServer(field, JsonValue.Create(v))" Color="Color.Primary"
+                                           Label="@field.Label" Disabled="busy" />
+                                break;
+                            case ServerSettingKind.Number:
+                                <MudNumericField T="int" Value="ServerInt(field)" ValueChanged="v => SetServer(field, JsonValue.Create(v))" Label="@field.Label"
+                                                 Min="field.Min" Max="field.Max" Variant="Variant.Outlined" Margin="Margin.Dense" HelperText="@field.Help" Disabled="busy" />
+                                break;
+                            case ServerSettingKind.Choice:
+                                <MudSelect T="int" Value="ServerInt(field)" ValueChanged="v => SetServer(field, JsonValue.Create(v))" Label="@field.Label"
+                                           Variant="Variant.Outlined" Margin="Margin.Dense" HelperText="@field.Help" Disabled="busy">
+                                    @foreach (var choice in field.Choices ?? [])
+                                    {
+                                        <MudSelectItem T="int" Value="choice.Value">@choice.Label</MudSelectItem>
+                                    }
+                                </MudSelect>
+                                break;
+                            default:
+                                <MudTextField T="string" Value="ServerText(field)" ValueChanged="v => SetServerText(field, v)" Label="@field.Label"
+                                              InputType="@(field.Kind == ServerSettingKind.Password ? InputType.Password : InputType.Text)"
+                                              Variant="Variant.Outlined" Margin="Margin.Dense" HelperText="@field.Help" Disabled="busy" autocomplete="off" />
+                                break;
+                        }
+                    </div>
+                }
+            }
+        </MudPaper>
+    </MudItem>
+
+    <MudItem xs="12" lg="7">
+        <MudPaper Class="pa-4" Elevation="1">
+            <div class="d-flex align-center flex-wrap gap-2">
+                <MudText Typo="Typo.h6">World</MudText>
+                <MudSpacer />
+                @if (worldValues is not null)
+                {
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">
+                        @(worldLive ? "Read from the server" : "Last read") @worldValues.ReadAt.ToLocalTime().ToString("g")
+                    </MudText>
+                }
+                <MudIconButton Icon="@Icons.Material.Filled.Refresh" Size="Size.Small" Disabled="busy || !IsRunning" OnClick="ReadWorldAsync"
+                               aria-label="Read world settings from the server" title="Read from the server" />
+            </div>
+            <MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-3">
+                Saved in the world itself, so they're read from and changed through the running server.
+            </MudText>
+
+            @if (schema is null)
+            {
+                <MudAlert Severity="Severity.Warning" Dense="true">
+                    The world setting definitions couldn't be read from the game files. Use the console's <code>/worldconfig</code> command instead.
+                </MudAlert>
+            }
+            else
+            {
+                @if (!IsRunning)
+                {
+                    <MudAlert Severity="Severity.Info" Dense="true" Class="mb-3">
+                        @(worldValues is null ? "Start the server to read and change world settings." : "Start the server to change world settings. Showing the values last read.")
+                    </MudAlert>
+                }
+
+                @if (schema.PlayStyles.Count > 0)
+                {
+                    <div class="d-flex flex-wrap align-center gap-2 mb-3">
+                        <MudSelect T="string" @bind-Value="presetCode" Label="Play-style preset" Variant="Variant.Outlined" Margin="Margin.Dense"
+                                   Style="max-width:20rem" Disabled="!CanEditWorld">
+                            @foreach (var style in schema.PlayStyles)
+                            {
+                                <MudSelectItem T="string" Value="style.Code">@style.Label</MudSelectItem>
+                            }
+                        </MudSelect>
+                        <MudButton Variant="Variant.Outlined" Size="Size.Small" Disabled="!CanEditWorld || presetCode is null" OnClick="ApplyPreset">Use preset values</MudButton>
+                    </div>
+                }
+
+                <MudExpansionPanels MultiExpansion="true" Elevation="0">
+                    @foreach (var category in schema.Settings.GroupBy(s => s.Category))
+                    {
+                        var editedInCategory = category.Count(s => worldEdits.ContainsKey(s.Code));
+                        <MudExpansionPanel Expanded="@(category.Key is "spawnndeath" or "temporalstability" or "survivalchallenges")">
+                            <TitleContent>
+                                <div class="d-flex align-center gap-2">
+                                    <MudText Typo="Typo.subtitle1">@schema.CategoryLabel(category.Key)</MudText>
+                                    @if (editedInCategory > 0)
+                                    {
+                                        <MudChip T="string" Size="Size.Small" Color="Color.Primary">@editedInCategory changed</MudChip>
+                                    }
+                                </div>
+                            </TitleContent>
+                            <ChildContent>
+                                @foreach (var setting in category.OrderBy(s => s.OnlyDuringWorldCreate))
+                                {
+                                    var current = CurrentWorldValue(setting);
+                                    var value = worldEdits.GetValueOrDefault(setting.Code) ?? current;
+                                    var known = current is not null;
+                                    <div class="setting-row world-setting @(worldEdits.ContainsKey(setting.Code) ? "setting-row-edited" : "")">
+                                        <div class="world-setting-label">
+                                            <MudText Typo="Typo.body1">@setting.Label</MudText>
+                                            @if (!string.IsNullOrWhiteSpace(setting.Description))
+                                            {
+                                                <MudText Typo="Typo.caption" Color="Color.Secondary">@setting.Description</MudText>
+                                            }
+                                            @if (setting.OnlyDuringWorldCreate)
+                                            {
+                                                <MudText Typo="Typo.caption" Color="Color.Warning" Class="d-block">Set when the world was created; can't be changed.</MudText>
+                                            }
+                                        </div>
+                                        <div class="world-setting-control">
+                                            @if (setting.Type == WorldSettingType.Bool)
+                                            {
+                                                <MudSwitch T="bool" Value="IsOn(setting, value)" ValueChanged="v => SetWorldBool(setting, v)"
+                                                           Color="Color.Primary" Disabled="!CanEditWorld || setting.OnlyDuringWorldCreate || !known" />
+                                            }
+                                            else
+                                            {
+                                                <MudSelect T="string" Value="value" ValueChanged="v => SetWorld(setting, v)" Variant="Variant.Outlined" Margin="Margin.Dense"
+                                                           Placeholder="@(known ? null : "Unknown")" Disabled="!CanEditWorld || setting.OnlyDuringWorldCreate || !known"
+                                                           ToStringFunc="v => setting.LabelFor(v)">
+                                                    @foreach (var option in setting.Options)
+                                                    {
+                                                        <MudSelectItem T="string" Value="option.Value">@option.Label</MudSelectItem>
+                                                    }
+                                                    @if (current is not null && setting.Normalize(current) is null)
+                                                    {
+                                                        <MudSelectItem T="string" Value="current">@current (current, not a standard value)</MudSelectItem>
+                                                    }
+                                                </MudSelect>
+                                            }
+                                        </div>
+                                    </div>
+                                }
+                            </ChildContent>
+                        </MudExpansionPanel>
+                    }
+                </MudExpansionPanels>
+            }
+        </MudPaper>
+    </MudItem>
+</MudGrid>
+
+@code {
+    private WorldSettingsSchema? schema;
+    private WorldSettingValues? worldValues;
+    private bool worldLive;
+    private JsonObject? serverConfig;
+    private readonly Dictionary<string, string> worldEdits = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, JsonNode?> serverEdits = new(StringComparer.Ordinal);
+    private ServerSnapshot snapshot = default!;
+    private string? presetCode;
+    private string? busyMessage;
+    private bool busy;
+
+    private bool IsRunning => snapshot.Status == ServerStatus.Running;
+
+    private bool CanEditWorld => IsRunning && worldLive && !busy;
+
+    private int ChangeCount => worldEdits.Count + serverEdits.Count;
+
+    protected override void OnInitialized()
+    {
+        snapshot = Server.Snapshot;
+        Server.StatusChanged += OnStatusChanged;
+        schema = WorldSettings.GetSchema();
+        serverConfig = Config.TryReadObject();
+        worldValues = WorldSettings.GetCached();
+    }
+
+    // Read once the page is interactive, not during prerendering (which would read twice).
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender && IsRunning && schema is not null)
+        {
+            await ReadWorldAsync();
+            StateHasChanged();
+        }
+    }
+
+    private void OnStatusChanged(ServerSnapshot updated)
+    {
+        var becameRunning = updated.Status == ServerStatus.Running && snapshot.Status != ServerStatus.Running;
+        var stopped = updated.Status is ServerStatus.Stopped or ServerStatus.Crashed;
+        snapshot = updated;
+        _ = InvokeAsync(async () =>
+        {
+            if (stopped)
+            {
+                worldLive = false;
+                if (serverEdits.Count == 0)
+                {
+                    serverConfig = Config.TryReadObject(); // the server rewrites it on shutdown
+                }
+            }
+
+            if (becameRunning && !busy && schema is not null)
+            {
+                await ReadWorldAsync();
+            }
+
+            StateHasChanged();
+        });
+    }
+
+    private async Task ReadWorldAsync()
+    {
+        var wasBusy = busy;
+        busy = true;
+        busyMessage = $"Reading {schema?.Settings.Count} world settings from the server…";
+        try
+        {
+            worldValues = await WorldSettings.ReadCurrentAsync();
+            worldLive = true;
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Couldn't read world settings: {ex.Message}", Severity.Warning);
+        }
+        finally
+        {
+            busy = wasBusy;
+            busyMessage = null;
+        }
+    }
+
+    private string? CurrentWorldValue(WorldSettingDefinition setting)
+    {
+        var raw = worldValues?.Values.GetValueOrDefault(setting.Code);
+        return raw is null ? null : setting.Normalize(raw) ?? raw;
+    }
+
+    private void SetWorld(WorldSettingDefinition setting, string? value)
+    {
+        if (value is null)
+        {
+            return;
+        }
+
+        if (string.Equals(value, CurrentWorldValue(setting), StringComparison.OrdinalIgnoreCase))
+        {
+            worldEdits.Remove(setting.Code);
+        }
+        else
+        {
+            worldEdits[setting.Code] = value;
+        }
+    }
+
+    private static bool IsOn(WorldSettingDefinition setting, string? value) => setting.Normalize(value) == bool.TrueString.ToLowerInvariant();
+
+    private void SetWorldBool(WorldSettingDefinition setting, bool on) => SetWorld(setting, on ? "true" : "false");
+
+    private void ApplyPreset()
+    {
+        var style = schema?.PlayStyles.FirstOrDefault(p => p.Code == presetCode);
+        if (style is null || schema is null)
+        {
+            return;
+        }
+
+        var changed = 0;
+        foreach (var (code, value) in style.WorldConfig)
+        {
+            if (schema.Find(code) is { OnlyDuringWorldCreate: false } setting && setting.Normalize(value) is { } normalized)
+            {
+                SetWorld(setting, normalized);
+                changed += worldEdits.ContainsKey(setting.Code) ? 1 : 0;
+            }
+        }
+
+        Snackbar.Add(changed == 0 ? $"The world already matches {style.Label}." : $"{changed} setting{(changed == 1 ? "" : "s")} changed to match {style.Label}. Review and save.",
+            Severity.Info);
+    }
+
+    private JsonNode? ServerNode(ServerSettingField field) =>
+        serverEdits.TryGetValue(field.Key, out var edited) ? edited : serverConfig?[field.Key];
+
+    private string ServerText(ServerSettingField field) =>
+        ServerNode(field) is JsonValue value && value.TryGetValue(out string? text) ? text ?? "" : "";
+
+    private int ServerInt(ServerSettingField field) =>
+        ServerNode(field) is JsonValue value && value.TryGetValue(out int number) ? number : 0;
+
+    private bool ServerBool(ServerSettingField field) =>
+        ServerNode(field) is JsonValue value && value.TryGetValue(out bool flag) && flag;
+
+    private void SetServerText(ServerSettingField field, string? text) =>
+        SetServer(field, string.IsNullOrEmpty(text) && field.Nullable ? null : JsonValue.Create(text ?? ""));
+
+    private void SetServer(ServerSettingField field, JsonNode? value)
+    {
+        var original = serverConfig?[field.Key];
+        if ((original?.ToJsonString() ?? "null") == (value?.ToJsonString() ?? "null"))
+        {
+            serverEdits.Remove(field.Key);
+        }
+        else
+        {
+            serverEdits[field.Key] = value;
+        }
+    }
+
+    private void Discard()
+    {
+        worldEdits.Clear();
+        serverEdits.Clear();
+    }
+
+    private async Task SaveAsync(bool restart)
+    {
+        if (serverEdits.Count > 0 && IsRunning)
+        {
+            var confirmed = await Dialogs.ShowMessageBoxAsync("Save and restart",
+                "The server will stop (players are disconnected), the settings are saved, and it starts again. Continue?",
+                yesText: "Save and restart", cancelText: "Cancel");
+            if (confirmed != true)
+            {
+                return;
+            }
+        }
+
+        busy = true;
+        busyMessage = restart || (serverEdits.Count > 0 && IsRunning) ? "Saving and restarting the server…" : "Saving…";
+        try
+        {
+            var message = await Applier.ApplyAsync(
+                new Dictionary<string, string>(worldEdits, StringComparer.OrdinalIgnoreCase),
+                new Dictionary<string, JsonNode?>(serverEdits),
+                restart);
+            worldEdits.Clear();
+            serverEdits.Clear();
+            serverConfig = Config.TryReadObject();
+            worldValues = WorldSettings.GetCached();
+            Snackbar.Add(message, Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        finally
+        {
+            busy = false;
+            busyMessage = null;
+        }
+    }
+
+    public void Dispose() => Server.StatusChanged -= OnStatusChanged;
+}

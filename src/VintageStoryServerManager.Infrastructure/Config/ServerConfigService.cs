@@ -52,6 +52,29 @@ public sealed class ServerConfigService(
     }
 
     /// <summary>
+    /// Changes individual top-level settings (e.g. ServerName, MaxClients) and saves the config,
+    /// keeping everything else as it is. Same rules as <see cref="SaveAsync"/>.
+    /// </summary>
+    public async Task UpdateSettingsAsync(IReadOnlyDictionary<string, JsonNode?> changes, CancellationToken cancellationToken = default)
+    {
+        if (changes.Count == 0)
+        {
+            return;
+        }
+
+        var config = TryReadObject() ?? (Exists
+            ? throw new InvalidDataException("serverconfig.json can't be read. Fix it in the raw editor first.")
+            : new JsonObject());
+
+        foreach (var (key, value) in changes)
+        {
+            config[key] = value?.DeepClone();
+        }
+
+        await SaveAsync(config.ToJsonString(new JsonSerializerOptions { WriteIndented = true }), cancellationToken);
+    }
+
+    /// <summary>
     /// Saves the config after backing up the current one. The server must be stopped: it
     /// rewrites serverconfig.json from memory when it shuts down, which would undo the edit.
     /// </summary>

@@ -14,6 +14,7 @@ using VintageStoryServerManager.Infrastructure.ModDb;
 using VintageStoryServerManager.Infrastructure.Mods;
 using VintageStoryServerManager.Infrastructure.Players;
 using VintageStoryServerManager.Infrastructure.Server;
+using VintageStoryServerManager.Infrastructure.WorldSettings;
 
 namespace VintageStoryServerManager.Infrastructure;
 
@@ -57,6 +58,8 @@ public static class DependencyInjection
         services.AddTransient<ModInstaller>();
 
         services.AddSingleton<ServerConfigService>();
+        services.AddSingleton<WorldSettingsService>();
+        services.AddSingleton<SettingsApplier>();
         services.AddSingleton<LogService>();
         services.AddSingleton<PlayerService>();
 

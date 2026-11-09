@@ -45,6 +45,9 @@ internal sealed class FakeGameServer : IGameServer
 
     public List<string> Commands { get; } = [];
 
+    /// <summary>Console lines the fake server prints in reply to a command.</summary>
+    public Func<string, IEnumerable<string>>? Respond { get; set; }
+
     public event Action<ServerSnapshot>? StatusChanged;
 
     public event Action<ConsoleLine>? ConsoleOutput;
@@ -80,6 +83,11 @@ internal sealed class FakeGameServer : IGameServer
         }
 
         Commands.Add(command);
+        foreach (var line in Respond?.Invoke(command) ?? [])
+        {
+            ConsoleOutput?.Invoke(new ConsoleLine(DateTimeOffset.UtcNow, line, ConsoleLineKind.Output));
+        }
+
         return Task.CompletedTask;
     }
 }

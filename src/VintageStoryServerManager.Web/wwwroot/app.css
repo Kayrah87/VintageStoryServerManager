@@ -183,3 +183,42 @@ h1:focus {
     max-height: 100%;
     object-fit: contain;
 }
+
+/* ---- Settings ---------------------------------------------------------- */
+
+.settings-savebar {
+    position: fixed;
+    right: 24px;
+    bottom: 24px;
+    z-index: 1200;
+    max-width: calc(100vw - 48px);
+}
+
+.setting-row {
+    padding: 0.35rem 0.5rem;
+    border-left: 3px solid transparent;
+    border-radius: 2px;
+}
+
+.setting-row-edited {
+    border-left-color: var(--mud-palette-primary);
+    background: rgba(200, 155, 90, 0.08);
+}
+
+.world-setting {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 1rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.world-setting-label {
+    flex: 1 1 16rem;
+    min-width: 0;
+}
+
+.world-setting-control {
+    flex: 0 1 22rem;
+    min-width: 12rem;
+}

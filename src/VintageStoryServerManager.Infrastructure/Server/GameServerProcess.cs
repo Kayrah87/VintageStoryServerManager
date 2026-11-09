@@ -21,6 +21,12 @@ public sealed class GameServerProcess(
     ILogger<GameServerProcess> logger) : IGameServer, IDisposable
 {
     private static readonly TimeSpan CrashWindow = TimeSpan.FromMinutes(10);
+
+    /// <summary>
+    /// The game drops console commands that arrive back to back (even in a single write), so
+    /// commands are spaced out. 50 ms was enough in testing; this leaves a margin.
+    /// </summary>
+    internal static readonly TimeSpan MinCommandInterval = TimeSpan.FromMilliseconds(100);
     private const int MaxCrashRestarts = 3;
 
     private readonly Lock _gate = new();
@@ -28,6 +34,8 @@ public sealed class GameServerProcess(
     private readonly LinkedList<ConsoleLine> _history = new();
     private readonly HashSet<string> _players = new(StringComparer.OrdinalIgnoreCase);
     private readonly Queue<DateTimeOffset> _crashRestarts = new();
+    private readonly SemaphoreSlim _commandGate = new(1, 1);
+    private DateTimeOffset _lastCommandAt = DateTimeOffset.MinValue;
 
     private Process? _process;
     private TaskCompletionSource? _exited;
@@ -121,9 +129,24 @@ public sealed class GameServerProcess(
             throw new InvalidOperationException("The server isn't running.");
         }
 
-        AddLine(text, ConsoleLineKind.Input);
-        await process.StandardInput.WriteLineAsync(text.AsMemory(), cancellationToken);
-        await process.StandardInput.FlushAsync(cancellationToken);
+        await _commandGate.WaitAsync(cancellationToken);
+        try
+        {
+            var wait = _lastCommandAt + MinCommandInterval - time.GetUtcNow();
+            if (wait > TimeSpan.Zero)
+            {
+                await Task.Delay(wait, time, cancellationToken);
+            }
+
+            AddLine(text, ConsoleLineKind.Input);
+            await process.StandardInput.WriteLineAsync(text.AsMemory(), cancellationToken);
+            await process.StandardInput.FlushAsync(cancellationToken);
+            _lastCommandAt = time.GetUtcNow();
+        }
+        finally
+        {
+            _commandGate.Release();
+        }
     }
 
     private void StartCore()
@@ -393,5 +416,6 @@ public sealed class GameServerProcess(
         }
 
         _lifecycle.Dispose();
+        _commandGate.Dispose();
     }
 }

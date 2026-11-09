@@ -8,45 +8,53 @@
 @inject IGameServer Server
 @inject ISnackbar Snackbar
 
-<PageTitle>Server config</PageTitle>
+<PageTitle>Server settings</PageTitle>
 
-<div class="d-flex align-center mb-2 gap-2 flex-wrap">
-    <MudText Typo="Typo.h4">Server config</MudText>
-    <MudSpacer />
-    <MudButton Variant="Variant.Text" StartIcon="@Icons.Material.Filled.Refresh" Disabled="busy" OnClick="LoadAsync">Reload</MudButton>
-    <MudButton Variant="Variant.Outlined" Disabled="busy" OnClick="Validate">Check</MudButton>
-    <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Save"
-               Disabled="busy || !canSave || !dirty" OnClick="SaveAsync">Save</MudButton>
-</div>
+<MudText Typo="Typo.h4" GutterBottom="true">Server settings</MudText>
 
-<MudText Class="mb-3" Color="Color.Secondary">
-    <code>serverconfig.json</code>: server name, password, port, whitelist mode, roles, world settings and more.
-    The previous version is backed up automatically when you save.
-</MudText>
+<MudTabs Elevation="1" Rounded="true" ApplyEffectsToContainer="true" TabPanelsClass="pa-4" @bind-ActivePanelIndex="activeTab">
+    <MudTabPanel Text="Settings">
+        <SettingsPanel />
+    </MudTabPanel>
+    <MudTabPanel Text="Raw serverconfig.json">
+        <div class="d-flex align-center mb-2 gap-2 flex-wrap">
+            <MudText Color="Color.Secondary">
+                Every setting in <code>serverconfig.json</code>, including roles and world-creation defaults. The previous version is backed up when you save.
+            </MudText>
+            <MudSpacer />
+            <MudButton Variant="Variant.Text" StartIcon="@Icons.Material.Filled.Refresh" Disabled="busy" OnClick="LoadAsync">Reload</MudButton>
+            <MudButton Variant="Variant.Outlined" Disabled="busy" OnClick="Validate">Check</MudButton>
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Save"
+                       Disabled="busy || !canSave || !dirty" OnClick="SaveAsync">Save</MudButton>
+        </div>
 
-@if (!canSave)
-{
-    <MudAlert Severity="Severity.Info" Class="mb-3">
-        Stop the server to edit the config. The server rewrites this file when it shuts down, which would undo your changes.
-    </MudAlert>
-}
+        @if (!canSave)
+        {
+            <MudAlert Severity="Severity.Info" Class="mb-3">
+                Stop the server to edit the raw file. The server rewrites it when it shuts down, which would undo your changes.
+                The Settings tab can save and restart for you.
+            </MudAlert>
+        }
 
-@if (validationError is not null)
-{
-    <MudAlert Severity="Severity.Error" Class="mb-3">@validationError</MudAlert>
-}
+        @if (validationError is not null)
+        {
+            <MudAlert Severity="Severity.Error" Class="mb-3">@validationError</MudAlert>
+        }
 
-@if (text is null)
-{
-    <MudAlert Severity="Severity.Info">There's no serverconfig.json yet. The server creates one the first time it starts.</MudAlert>
-}
-else
-{
-    <MudTextField T="string" Value="text" ValueChanged="OnChanged" Lines="32" Variant="Variant.Outlined" Class="code-editor"
-                  ReadOnly="!canSave" Immediate="false" spellcheck="false" aria-label="serverconfig.json" />
-}
+        @if (text is null)
+        {
+            <MudAlert Severity="Severity.Info">There's no serverconfig.json yet. The server creates one the first time it starts.</MudAlert>
+        }
+        else
+        {
+            <MudTextField T="string" Value="text" ValueChanged="OnChanged" Lines="32" Variant="Variant.Outlined" Class="code-editor"
+                          ReadOnly="!canSave" Immediate="false" spellcheck="false" aria-label="serverconfig.json" />
+        }
+    </MudTabPanel>
+</MudTabs>
 
 @code {
+    private int activeTab;
     private string? text;
     private string? validationError;
     private bool dirty;

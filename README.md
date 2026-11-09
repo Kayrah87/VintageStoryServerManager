@@ -14,7 +14,11 @@ A self-hosted Docker image that runs a [Vintage Story](https://www.vintagestory.
   - Automatic backups before every mod change, config edit, restore and game version switch.
   - One-click restore and download.
 - **Players:** online players, kick, timed bans and unban, the whitelist and in-game roles.
-- **Server config editor** for `serverconfig.json`, with validation and an automatic backup.
+- **Server settings:**
+  - Controls for server settings such as name, password, player limit, whitelist, PvP and view distance.
+  - Controls for every world setting the game defines, such as game mode, temporal storms, player health, seasons and creature hostility. They're grouped by category, with the game's own labels and descriptions, and play-style presets.
+  - The page reads the current values from the running server. **Save and restart** applies the changes and restarts the server.
+  - A raw `serverconfig.json` editor with validation and an automatic backup.
 - **Log viewer** with crash logs first, follow mode and download.
 - **Game versions:** download other server versions from the official API (checksum verified) and switch between them without rebuilding the image.
 - **Accounts:** no public sign-up. Admins create users as Viewer, Operator or Admin.
@@ -159,7 +163,9 @@ Five wrong passwords in a row lock an account for 15 minutes. An admin can unloc
   - It picks the newest release tagged for the running game version. Failing that, it takes one for the same minor version and warns you.
   - Missing or outdated dependencies are installed too.
   - You see the plan before anything changes.
-- **Server config** can only be saved while the server is stopped, because the game rewrites `serverconfig.json` when it shuts down.
+- **World settings** live in the world save, not in `serverconfig.json`. The manager reads and changes them on the running server with `/worldconfig`, checking values against the game's own definitions (the server would accept anything). Changes take effect after a restart. Settings marked "set when the world was created" (climate, world size, landforms and so on) can't be changed for an existing world.
+- **Server settings** are written to `serverconfig.json` while the server is stopped, because the game rewrites that file when it shuts down. **Save and restart** does this for you; the raw editor needs the server stopped.
+- **Console commands** are sent at least 100 ms apart, because the game drops commands that arrive back to back.
 - **Player actions** go through server console commands, so the server must be running.
 - **Restores** need the server stopped. They replace only the parts in the backup (for example a Mods backup leaves the world alone), and back up what they replace first.
 - **Switching game versions** needs the server stopped and makes a full backup first. Worlds opened in a newer version may not load in an older one.
