@@ -9,18 +9,24 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
+# GitHub-hosted runners: this repo is public, so fork PRs must never reach
+# the self-hosted galaxy runners.
 jobs:
   build-test:
-    runs-on: [self-hosted, galaxy]
-    container:
-      image: mcr.microsoft.com/dotnet/sdk:10.0
-      volumes:
-        - /var/cache/vintagestoryservermanager-ci/nuget:/root/.nuget/packages
+    runs-on: ubuntu-latest
     env:
       DOTNET_CLI_TELEMETRY_OPTOUT: "1"
       DOTNET_NOLOGO: "1"
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: "**/*.csproj"
       - name: Restore
         run: dotnet restore VintageStoryServerManager.slnx
       - name: Build
