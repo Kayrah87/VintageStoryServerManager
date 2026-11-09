@@ -485,3 +485,10 @@ $RECYCLE.BIN/
 .data/
 .vintagestory/
 data/
+
+# The template above ignores Backup*/ and [Ll]ogs/ (build artefacts); our source has
+# Backups/ and Logs/ folders.
+!src/**/Backups/
+!tests/**/Backups/
+!src/**/Logs/
+!tests/**/Logs/

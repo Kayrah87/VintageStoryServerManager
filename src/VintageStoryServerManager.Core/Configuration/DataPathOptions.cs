@@ -9,10 +9,11 @@ namespace VintageStoryServerManager.Core.Configuration;
 /// <code>
 /// /data
 /// ├── vintagestory/   Vintage Story data path (--dataPath): Saves, Mods, ModConfig, Logs, serverconfig.json
-/// ├── manager/        manager.db (accounts, settings) and data-protection keys
+/// ├── manager/        manager.db (accounts), data-protection keys, disabled mods, temp files
+/// ├── game/           server versions downloaded by the manager (one folder per version)
 /// └── backups/        world and mod backups made by the manager
 /// </code>
-/// The game binaries are not in the volume. They ship in the image at <see cref="GameInstallDirectory"/>.
+/// The image also bundles one server version at <see cref="GameInstallDirectory"/>.
 /// </remarks>
 public sealed class DataPathOptions
 {
@@ -48,6 +49,24 @@ public sealed class DataPathOptions
 
     public string DataProtectionKeysDirectory => Path.Combine(ManagerDirectory, "keys");
 
+    /// <summary>Mods the manager has disabled. Outside every path the game searches for mods.</summary>
+    public string DisabledModsDirectory => Path.Combine(ManagerDirectory, "disabled-mods");
+
+    /// <summary>Scratch space for downloads; on the same volume so files can be moved into place.</summary>
+    public string TempDirectory => Path.Combine(ManagerDirectory, "tmp");
+
+    /// <summary>Game server versions downloaded by the manager, one folder per version.</summary>
+    public string GameVersionsDirectory => Path.Combine(Root, "game");
+
+    /// <summary>Records which game version is active.</summary>
+    public string GameStateFile => Path.Combine(ManagerDirectory, "game.json");
+
+    public string ServerConfigPath => Path.Combine(GameDataDirectory, "serverconfig.json");
+
+    public string LogsDirectory => Path.Combine(GameDataDirectory, "Logs");
+
+    public string PlayerDataDirectory => Path.Combine(GameDataDirectory, "Playerdata");
+
     /// <summary>Creates the directory layout under <see cref="Root"/> if any part is missing.</summary>
     public void EnsureDirectories()
     {
@@ -55,6 +74,9 @@ public sealed class DataPathOptions
         Directory.CreateDirectory(ModsDirectory);
         Directory.CreateDirectory(ManagerDirectory);
         Directory.CreateDirectory(DataProtectionKeysDirectory);
+        Directory.CreateDirectory(DisabledModsDirectory);
+        Directory.CreateDirectory(TempDirectory);
+        Directory.CreateDirectory(GameVersionsDirectory);
         Directory.CreateDirectory(BackupsDirectory);
     }
 }
