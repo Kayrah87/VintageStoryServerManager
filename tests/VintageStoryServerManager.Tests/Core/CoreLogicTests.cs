@@ -199,3 +199,36 @@ public sealed class ReleaseSelectorTests
     public void Returns_null_without_a_compatible_release() =>
         Assert.Null(ReleaseSelector.PickCompatible([Release("1.0.0", "1.20.0")], "1.22.7"));
 }
+
+public sealed class ModDbBrowsingTests
+{
+    private static ModDbSearchResult Mod(int id, string side = "both", string type = "mod") =>
+        new(id, $"Mod {id}", null, null, [$"mod{id}"], null, side, type, null, [], 0, 0, 0, 0, null);
+
+    [Fact]
+    public void Builds_the_api_query()
+    {
+        var url = new ModDbQuery("better ruins", ModDbSort.Newest, Ascending: true, TagIds: [990, 12], GameVersionTagId: -281569466515455).ToRelativeUrl();
+
+        Assert.Equal("api/mods?text=better%20ruins&tagids[]=990&tagids[]=12&gameversions[]=-281569466515455&orderby=asset.created&orderdirection=asc", url);
+        Assert.Equal("api/mods?orderby=trendingpoints&orderdirection=desc", new ModDbQuery().ToRelativeUrl());
+    }
+
+    [Fact]
+    public void Filters_locally_and_pages()
+    {
+        var results = Enumerable.Range(1, 50).Select(i => Mod(i)).Append(Mod(99, side: "client")).Append(Mod(98, type: "externaltool")).ToList();
+
+        var page = ModDbBrowsing.Page(results, new ModDbLocalFilter(), page: 3, pageSize: 24);
+        Assert.Equal(50, page.TotalCount);
+        Assert.Equal(3, page.PageCount);
+        Assert.Equal([49, 50], page.Items.Select(m => m.ModId));
+
+        var everything = ModDbBrowsing.Page(results, new ModDbLocalFilter(HideClientOnly: false, ModsOnly: false), page: 1, pageSize: 24);
+        Assert.Equal(52, everything.TotalCount);
+    }
+
+    [Fact]
+    public void Clamps_out_of_range_pages() =>
+        Assert.Equal(1, ModDbBrowsing.Page([], new ModDbLocalFilter(), page: 7, pageSize: 24).Page);
+}

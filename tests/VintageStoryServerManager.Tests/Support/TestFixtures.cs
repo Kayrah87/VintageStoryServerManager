@@ -124,11 +124,17 @@ internal sealed class FakeModDb : IModDbClient
         return this;
     }
 
-    public Task<IReadOnlyList<ModDbSearchResult>> SearchAsync(string text, CancellationToken cancellationToken = default) =>
+    public Task<IReadOnlyList<ModDbSearchResult>> BrowseAsync(ModDbQuery query, CancellationToken cancellationToken = default) =>
         Task.FromResult<IReadOnlyList<ModDbSearchResult>>(_mods.Values
-            .Where(m => m.Name.Contains(text, StringComparison.OrdinalIgnoreCase))
-            .Select(m => new ModDbSearchResult(m.ModId, m.Name, null, m.Author, [m.UrlAlias!], m.UrlAlias, m.Side, null, [], 0, null))
+            .Where(m => string.IsNullOrEmpty(query.Text) || m.Name.Contains(query.Text, StringComparison.OrdinalIgnoreCase))
+            .Select(m => new ModDbSearchResult(m.ModId, m.Name, null, m.Author, [m.UrlAlias!], m.UrlAlias, m.Side, "mod", null, [], 0, 0, 0, 0, null))
             .ToList());
+
+    public Task<IReadOnlyList<ModDbTag>> GetTagsAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<ModDbTag>>([]);
+
+    public Task<IReadOnlyList<ModDbTag>> GetGameVersionsAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<ModDbTag>>([new ModDbTag(-1, "1.22.7", null)]);
 
     public Task<ModDbMod?> GetModAsync(string idOrAlias, CancellationToken cancellationToken = default) =>
         Task.FromResult(_mods.GetValueOrDefault(idOrAlias));

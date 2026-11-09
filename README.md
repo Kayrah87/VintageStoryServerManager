@@ -7,7 +7,8 @@ A self-hosted Docker image that runs a [Vintage Story](https://www.vintagestory.
 - **Mods:**
   - Every installed mod is listed with its `modinfo.json` details, along with health checks for duplicates, missing or outdated dependencies, game-version mismatches and unreadable files.
   - You can enable, disable, delete or upload mods.
-  - You can search the official mod database, install mods with their dependencies resolved, and check for and apply updates.
+  - You can browse the official mod database as cards with logos: search, sort (trending, most downloaded or followed, newest, recently updated, most comments), filter by tag, compatibility with your server's version and side, and page through results. A details view shows screenshots, links and releases.
+  - Installing resolves dependencies, and you can check for and apply updates.
 - **Backups:**
   - Full, world, mods or config backups. World backups are safe while the server runs.
   - Automatic backups before every mod change, config edit, restore and game version switch.

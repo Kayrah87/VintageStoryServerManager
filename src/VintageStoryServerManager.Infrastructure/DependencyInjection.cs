@@ -33,6 +33,7 @@ public static class DependencyInjection
         services.Configure<ModDbOptions>(configuration.GetSection(ModDbOptions.SectionName));
 
         services.AddSingleton(TimeProvider.System);
+        services.AddMemoryCache();
         services.AddSingleton<MaintenanceLock>();
 
         services.AddHttpClient(GameInstallation.HttpClientName, http =>

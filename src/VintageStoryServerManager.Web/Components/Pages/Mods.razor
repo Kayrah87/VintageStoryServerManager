@@ -1,18 +1,14 @@
 @page "/mods"
 @implements IDisposable
 
-@using Microsoft.Extensions.Options
-@using VintageStoryServerManager.Core.Configuration
-@using VintageStoryServerManager.Core.ModDb
 @using VintageStoryServerManager.Core.Mods
 @using VintageStoryServerManager.Infrastructure.ModDb
 @using VintageStoryServerManager.Infrastructure.Mods
+@using VintageStoryServerManager.Web.Components.ModBrowser
 
 @inject ModLibrary Library
 @inject ModInstaller Installer
-@inject IModDbClient ModDb
 @inject IGameServer Server
-@inject IOptions<ModDbOptions> ModDbOptions
 @inject ISnackbar Snackbar
 @inject IDialogService Dialogs
 
@@ -139,118 +135,43 @@
     </MudTabPanel>
 
     <MudTabPanel Text="Mod database">
-        <div class="d-flex gap-2 mb-4">
-            <MudTextField @bind-Value="searchText" Placeholder="Search mods.vintagestory.at" Variant="Variant.Outlined" Margin="Margin.Dense"
-                          Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search" Class="flex-grow-1"
-                          Immediate="true" OnKeyDown="@(e => e.Key == "Enter" ? SearchAsync() : Task.CompletedTask)" />
-            <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="searching" OnClick="SearchAsync">Search</MudButton>
-        </div>
-
-        @if (searching)
-        {
-            <MudProgressLinear Color="Color.Primary" Indeterminate="true" Class="mb-2" />
-        }
-
-        @if (searchResults is not null)
-        {
-            <MudTable Items="searchResults" Dense="true" Hover="true" Elevation="0" Breakpoint="Breakpoint.Sm">
-                <HeaderContent>
-                    <MudTh>Mod</MudTh>
-                    <MudTh>Side</MudTh>
-                    <MudTh>Downloads</MudTh>
-                    <MudTh>Last release</MudTh>
-                    <AuthorizeView Roles="@Roles.Admin" Context="auth"><MudTh /></AuthorizeView>
-                </HeaderContent>
-                <RowTemplate>
-                    <MudTd DataLabel="Mod">
-                        <MudLink Href="@ModPage(context)" Target="_blank" Typo="Typo.body1">@context.Name</MudLink>
-                        <MudText Typo="Typo.caption" Color="Color.Secondary">@context.Key@(context.Author is null ? "" : $" · by {context.Author}")</MudText>
-                        @if (!string.IsNullOrWhiteSpace(context.Summary))
-                        {
-                            <MudText Typo="Typo.body2">@context.Summary</MudText>
-                        }
-                    </MudTd>
-                    <MudTd DataLabel="Side">@context.Side</MudTd>
-                    <MudTd DataLabel="Downloads">@context.Downloads.ToString("N0")</MudTd>
-                    <MudTd DataLabel="Last release">@context.LastReleased</MudTd>
-                    <AuthorizeView Roles="@Roles.Admin" Context="auth">
-                        <MudTd Style="text-align:right">
-                            @if (IsInstalled(context))
-                            {
-                                <MudChip T="string" Size="Size.Small" Color="Color.Success">Installed</MudChip>
-                            }
-                            else
-                            {
-                                <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Primary" Disabled="busy"
-                                           OnClick="() => PlanAsync(context.Key)">Install</MudButton>
-                            }
-                        </MudTd>
-                    </AuthorizeView>
-                </RowTemplate>
-                <NoRecordsContent>
-                    <MudText>No mods found.</MudText>
-                </NoRecordsContent>
-            </MudTable>
-        }
+        <ModDatabaseBrowser InstalledModIds="InstalledModIds" GameVersion="@report?.GameVersion" CanInstall="isAdmin" Busy="busy"
+                            OnInstall="PlanAsync" />
     </MudTabPanel>
 </MudTabs>
 
-@if (plan is not null)
-{
-    <MudPaper Class="pa-4 mt-4" Elevation="3" Outlined="true">
-        <MudText Typo="Typo.h6" GutterBottom="true">Install plan</MudText>
-        @foreach (var error in plan.Errors)
-        {
-            <MudAlert Severity="Severity.Error" Dense="true" Class="mb-1">@error</MudAlert>
-        }
-        @foreach (var warning in plan.Warnings)
-        {
-            <MudAlert Severity="Severity.Warning" Dense="true" Class="mb-1">@warning</MudAlert>
-        }
-        @if (plan.Steps.Count > 0)
-        {
-            <MudSimpleTable Dense="true" Elevation="0" Class="my-2">
-                <thead><tr><th>Mod</th><th>Version</th><th>Why</th></tr></thead>
-                <tbody>
-                    @foreach (var step in plan.Steps)
-                    {
-                        <tr>
-                            <td>@step.Name <MudText Typo="Typo.caption" Color="Color.Secondary">@step.ModId</MudText></td>
-                            <td>@(step.ReplacesVersion is { } old ? $"{old} → " : "")@step.Release.ModVersion</td>
-                            <td>@step.Reason</td>
-                        </tr>
-                    }
-                </tbody>
-            </MudSimpleTable>
-        }
-        <div class="d-flex gap-2 mt-2">
-            <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="busy || !plan.CanApply" OnClick="ApplyPlanAsync">
-                Install @plan.Steps.Count mod@(plan.Steps.Count == 1 ? "" : "s")
-            </MudButton>
-            <MudButton Variant="Variant.Text" Disabled="busy" OnClick="DiscardPlan">Cancel</MudButton>
-        </div>
-    </MudPaper>
-}
+<MudOverlay Visible="planning" DarkBackground="true" ZIndex="1400">
+    <div class="d-flex flex-column align-center gap-3">
+        <MudProgressCircular Color="Color.Primary" Indeterminate="true" Size="Size.Large" />
+        <MudText>@busyMessage</MudText>
+    </div>
+</MudOverlay>
 
 @code {
     private const long MaxUploadBytes = 512L * 1024 * 1024;
 
     private ModScanReport? report;
+    [CascadingParameter]
+    private Task<AuthenticationState> AuthenticationState { get; set; } = default!;
+
     private IReadOnlyList<ModUpdate>? updates;
-    private IReadOnlyList<ModDbSearchResult>? searchResults;
-    private InstallPlan? plan;
     private ServerSnapshot snapshot = default!;
-    private string searchText = "";
     private string? busyMessage;
     private bool busy;
-    private bool searching;
+    private bool planning;
+    private bool isAdmin;
     private bool changedSinceStart;
     private int activeTab;
 
-    protected override void OnInitialized()
+    private IReadOnlySet<string> InstalledModIds =>
+        report?.Mods.Where(m => m.ModId is not null).Select(m => m.ModId!).ToHashSet(StringComparer.OrdinalIgnoreCase)
+        ?? new HashSet<string>();
+
+    protected override async Task OnInitializedAsync()
     {
         snapshot = Server.Snapshot;
         Server.StatusChanged += OnStatusChanged;
+        isAdmin = (await AuthenticationState).User.IsInRole(Roles.Admin);
         Rescan();
     }
 
@@ -269,12 +190,6 @@
 
     private ModUpdate? UpdateFor(InstalledMod mod) =>
         mod.Enabled ? updates?.FirstOrDefault(u => u.FileName == mod.FileName) : null;
-
-    private bool IsInstalled(ModDbSearchResult result) =>
-        report?.Mods.Any(m => m.ModId is not null && result.ModIdStrings.Contains(m.ModId, StringComparer.OrdinalIgnoreCase)) == true;
-
-    private string ModPage(ModDbSearchResult result) =>
-        $"{ModDbOptions.Value.BaseUrl.TrimEnd('/')}/{result.UrlAlias ?? $"show/mod/{result.ModId}"}";
 
     private Task EnableAsync(InstalledMod mod) =>
         ChangeAsync($"Enabling {mod.DisplayName}…", () => Library.EnableAsync(mod.FileName), $"Enabled {mod.DisplayName}.");
@@ -326,27 +241,15 @@
         }
     }
 
-    private async Task SearchAsync()
-    {
-        searching = true;
-        try
-        {
-            searchResults = await ModDb.SearchAsync(searchText);
-        }
-        catch (Exception ex)
-        {
-            Snackbar.Add($"Search failed: {ex.Message}", Severity.Error);
-        }
-        finally
-        {
-            searching = false;
-        }
-    }
-
     private async Task PlanAsync(string modKey)
     {
-        DiscardPlan();
-        busy = true;
+        if (busy)
+        {
+            return;
+        }
+
+        InstallPlan plan;
+        busy = planning = true;
         busyMessage = $"Resolving {modKey} and its dependencies…";
         try
         {
@@ -355,41 +258,35 @@
         catch (Exception ex)
         {
             Snackbar.Add($"Could not prepare the install: {ex.Message}", Severity.Error);
+            return;
         }
         finally
         {
-            busy = false;
+            busy = planning = false;
             busyMessage = null;
         }
-    }
 
-    private async Task ApplyPlanAsync()
-    {
-        if (plan is null)
+        // Remove the overlay before the dialog opens; it would otherwise sit on top of it.
+        StateHasChanged();
+        var parameters = new DialogParameters<InstallPlanDialog> { { d => d.Plan, plan } };
+        var dialog = await Dialogs.ShowAsync<InstallPlanDialog>("Install plan", parameters,
+            new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, CloseOnEscapeKey = true });
+        var result = await dialog.Result;
+        if (result is null || result.Canceled)
         {
+            Installer.Discard(plan);
             return;
         }
 
-        var current = plan;
         await ChangeAsync("Installing…", async () =>
         {
-            plan = null;
-            await Installer.ApplyAsync(current);
-            Snackbar.Add($"Installed {string.Join(", ", current.Steps.Select(s => $"{s.Name} {s.Release.ModVersion}"))}.", Severity.Success);
+            await Installer.ApplyAsync(plan);
+            Snackbar.Add($"Installed {string.Join(", ", plan.Steps.Select(s => $"{s.Name} {s.Release.ModVersion}"))}.", Severity.Success);
         }, null);
 
         if (updates is not null)
         {
-            updates = updates.Where(u => !current.Steps.Any(s => string.Equals(s.ModId, u.ModId, StringComparison.OrdinalIgnoreCase))).ToList();
-        }
-    }
-
-    private void DiscardPlan()
-    {
-        if (plan is not null)
-        {
-            Installer.Discard(plan);
-            plan = null;
+            updates = updates.Where(u => !plan.Steps.Any(s => string.Equals(s.ModId, u.ModId, StringComparison.OrdinalIgnoreCase))).ToList();
         }
     }
 
@@ -435,9 +332,5 @@
         }
     }
 
-    public void Dispose()
-    {
-        Server.StatusChanged -= OnStatusChanged;
-        DiscardPlan();
-    }
+    public void Dispose() => Server.StatusChanged -= OnStatusChanged;
 }

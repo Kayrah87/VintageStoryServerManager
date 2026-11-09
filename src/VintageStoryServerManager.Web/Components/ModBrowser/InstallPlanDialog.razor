@@ -1,0 +1,45 @@
+@using VintageStoryServerManager.Infrastructure.ModDb
+
+<MudDialog>
+    <DialogContent>
+        @foreach (var error in Plan.Errors)
+        {
+            <MudAlert Severity="Severity.Error" Dense="true" Class="mb-1">@error</MudAlert>
+        }
+        @foreach (var warning in Plan.Warnings)
+        {
+            <MudAlert Severity="Severity.Warning" Dense="true" Class="mb-1">@warning</MudAlert>
+        }
+        @if (Plan.Steps.Count > 0)
+        {
+            <MudSimpleTable Dense="true" Elevation="0" Class="my-2">
+                <thead><tr><th>Mod</th><th>Version</th><th>Why</th></tr></thead>
+                <tbody>
+                    @foreach (var step in Plan.Steps)
+                    {
+                        <tr>
+                            <td>@step.Name <MudText Typo="Typo.caption" Color="Color.Secondary">@step.ModId</MudText></td>
+                            <td>@(step.ReplacesVersion is { } old ? $"{old} → " : "")@step.Release.ModVersion</td>
+                            <td>@step.Reason</td>
+                        </tr>
+                    }
+                </tbody>
+            </MudSimpleTable>
+            <MudText Typo="Typo.caption" Color="Color.Secondary">Your current mods are backed up first. Changes take effect when the server restarts.</MudText>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="() => MudDialog.Cancel()">Cancel</MudButton>
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="!Plan.CanApply" OnClick="() => MudDialog.Close(DialogResult.Ok(true))">
+            Install @Plan.Steps.Count mod@(Plan.Steps.Count == 1 ? "" : "s")
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter]
+    private IMudDialogInstance MudDialog { get; set; } = default!;
+
+    [Parameter]
+    public InstallPlan Plan { get; set; } = default!;
+}

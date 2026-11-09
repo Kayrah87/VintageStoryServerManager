@@ -1,0 +1,318 @@
+@using VintageStoryServerManager.Core.ModDb
+
+@inject IModDbClient ModDb
+@inject IDialogService Dialogs
+@inject ISnackbar Snackbar
+@inject IScrollManager ScrollManager
+
+<div id="moddb-top" class="d-flex flex-wrap gap-3 align-center mb-2">
+    <MudTextField T="string" Value="searchText" ValueChanged="OnSearchTextChanged" Placeholder="Search mods" Variant="Variant.Outlined" Margin="Margin.Dense"
+                  Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search" Clearable="true" Immediate="true" DebounceInterval="400"
+                  Style="min-width:16rem" Class="flex-grow-1" />
+    <MudSelect T="ModDbSort" Value="sort" ValueChanged="OnSortChanged" Label="Sort by" Variant="Variant.Outlined" Margin="Margin.Dense" Style="max-width:14rem">
+        @foreach (var option in SortOptions)
+        {
+            <MudSelectItem T="ModDbSort" Value="option.Sort">@option.Label</MudSelectItem>
+        }
+    </MudSelect>
+    <MudTooltip Text="@(ascending ? "Ascending" : "Descending")">
+        <MudIconButton Icon="@(ascending ? Icons.Material.Filled.ArrowUpward : Icons.Material.Filled.ArrowDownward)" OnClick="ToggleDirectionAsync"
+                       aria-label="Toggle sort direction" />
+    </MudTooltip>
+    <MudSelect T="long" MultiSelection="true" SelectedValues="selectedTags" SelectedValuesChanged="OnTagsChanged" Label="Tags"
+               Variant="Variant.Outlined" Margin="Margin.Dense" Style="min-width:14rem; max-width:22rem" MaxHeight="400" Clearable="true"
+               MultiSelectionTextFunc="@(names => TagSummary(names))" Disabled="tags.Count == 0">
+        @foreach (var tag in tags)
+        {
+            <MudSelectItem T="long" Value="tag.Id">@tag.Name</MudSelectItem>
+        }
+    </MudSelect>
+</div>
+
+<div class="d-flex flex-wrap gap-4 align-center mb-3">
+    <MudSwitch T="bool" Value="compatibleOnly" ValueChanged="OnCompatibleChanged" Color="Color.Primary" Disabled="gameVersionTagId is null"
+               Label="@(GameVersion is null ? "Compatible with this server" : $"Compatible with {GameVersion}")" />
+    <MudSwitch T="bool" Value="filter.HideClientOnly" ValueChanged="@(v => SetFilter(filter with { HideClientOnly = v }))" Color="Color.Primary" Label="Hide client-only" />
+    <MudSwitch T="bool" Value="filter.ModsOnly" ValueChanged="@(v => SetFilter(filter with { ModsOnly = v }))" Color="Color.Primary" Label="Mods only (no tools)" />
+    <MudSpacer />
+    <MudText Typo="Typo.body2" Color="Color.Secondary">
+        @if (loading)
+        {
+            <span>Loading…</span>
+        }
+        else
+        {
+            <span>@pageData.TotalCount.ToString("N0") mod@(pageData.TotalCount == 1 ? "" : "s")</span>
+        }
+    </MudText>
+</div>
+
+@if (loading)
+{
+    <MudProgressLinear Color="Color.Primary" Indeterminate="true" Class="mb-3" />
+}
+else if (error is not null)
+{
+    <MudAlert Severity="Severity.Error" Class="mb-3">Couldn't reach the mod database: @error</MudAlert>
+}
+
+<MudGrid Spacing="3">
+    @foreach (var mod in pageData.Items)
+    {
+        var installed = IsInstalled(mod);
+        <MudItem xs="12" sm="6" md="4" xl="3" @key="mod.ModId">
+            <MudCard Elevation="2" Class="mod-card">
+                <button type="button" class="mod-card-image" @onclick="() => ShowDetailsAsync(mod)" aria-label="@($"Details for {mod.Name}")">
+                    @if (mod.Logo is { } logo)
+                    {
+                        <img src="@logo" alt="" loading="lazy" referrerpolicy="no-referrer" />
+                    }
+                    else
+                    {
+                        <MudIcon Icon="@Icons.Material.Filled.Extension" Size="Size.Large" Color="Color.Secondary" />
+                    }
+                </button>
+                <MudCardContent Class="pb-1">
+                    <MudLink Typo="Typo.subtitle1" Class="mod-card-title" OnClick="() => ShowDetailsAsync(mod)">@mod.Name</MudLink>
+                    <MudText Typo="Typo.caption" Color="Color.Secondary" Class="d-block">
+                        @(mod.Author is null ? "" : $"by {mod.Author}")@(mod.Side is { } side && side != "both" ? $" · {side} only" : "")
+                    </MudText>
+                    @if (!string.IsNullOrWhiteSpace(mod.Summary))
+                    {
+                        <MudText Typo="Typo.body2" Class="mod-card-summary mt-1">@mod.Summary</MudText>
+                    }
+                    <div class="d-flex flex-wrap gap-1 mt-2">
+                        @foreach (var tag in mod.Tags.Take(3))
+                        {
+                            <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">@tag</MudChip>
+                        }
+                    </div>
+                </MudCardContent>
+                <MudCardActions Class="mod-card-actions">
+                    <MudTooltip Text="Downloads"><span class="mod-stat"><MudIcon Icon="@Icons.Material.Filled.Download" Size="Size.Small" />@Compact(mod.Downloads)</span></MudTooltip>
+                    <MudTooltip Text="Follows"><span class="mod-stat"><MudIcon Icon="@Icons.Material.Filled.Favorite" Size="Size.Small" />@Compact(mod.Follows)</span></MudTooltip>
+                    <MudTooltip Text="@($"Last release {mod.LastReleased}")"><span class="mod-stat"><MudIcon Icon="@Icons.Material.Filled.Update" Size="Size.Small" />@Ago(mod.LastReleased)</span></MudTooltip>
+                    <MudSpacer />
+                    @if (installed)
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="Color.Success">Installed</MudChip>
+                    }
+                    else if (CanInstall)
+                    {
+                        <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Primary" Disabled="Busy" OnClick="() => OnInstall.InvokeAsync(mod.Key)">Install</MudButton>
+                    }
+                </MudCardActions>
+            </MudCard>
+        </MudItem>
+    }
+</MudGrid>
+
+@if (!loading && pageData.TotalCount == 0 && error is null)
+{
+    <MudText Class="mt-4">No mods match. Try other words, fewer tags, or turn off the compatibility filter.</MudText>
+}
+
+@if (pageData.PageCount > 1)
+{
+    <div class="d-flex justify-center mt-4">
+        <MudPagination Count="pageData.PageCount" Selected="pageData.Page" SelectedChanged="OnPageChanged" Color="Color.Primary" BoundaryCount="1" MiddleCount="5" />
+    </div>
+}
+
+@code {
+    private const int PageSize = 24;
+
+    private static readonly (ModDbSort Sort, string Label)[] SortOptions =
+    [
+        (ModDbSort.Trending, "Trending"),
+        (ModDbSort.MostDownloaded, "Most downloaded"),
+        (ModDbSort.MostFollowed, "Most followed"),
+        (ModDbSort.Newest, "Newest"),
+        (ModDbSort.RecentlyUpdated, "Recently updated"),
+        (ModDbSort.MostComments, "Most comments"),
+    ];
+
+    /// <summary>Installed mod ids, to mark results as installed.</summary>
+    [Parameter]
+    public IReadOnlySet<string> InstalledModIds { get; set; } = new HashSet<string>();
+
+    /// <summary>The server's game version, used for the compatibility filter.</summary>
+    [Parameter]
+    public string? GameVersion { get; set; }
+
+    [Parameter]
+    public bool CanInstall { get; set; }
+
+    [Parameter]
+    public bool Busy { get; set; }
+
+    /// <summary>Raised with the mod key when the user asks to install a mod.</summary>
+    [Parameter]
+    public EventCallback<string> OnInstall { get; set; }
+
+    private IReadOnlyList<ModDbTag> tags = [];
+    private IReadOnlyList<ModDbSearchResult> results = [];
+    private ModDbPage pageData = new([], 0, 1, PageSize);
+    private ModDbLocalFilter filter = new();
+    private IReadOnlyCollection<long> selectedTags = [];
+    private ModDbSort sort = ModDbSort.Trending;
+    private string searchText = "";
+    private bool ascending;
+    private bool compatibleOnly = true;
+    private long? gameVersionTagId;
+    private bool loading = true;
+    private string? error;
+    private int requestId;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var versionsTask = ModDb.GetGameVersionsAsync();
+            tags = (await ModDb.GetTagsAsync()).OrderBy(t => t.Name, StringComparer.OrdinalIgnoreCase).ToList();
+            var versions = await versionsTask;
+            gameVersionTagId = versions.FirstOrDefault(v => v.Name == GameVersion)?.Id;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+
+        compatibleOnly = gameVersionTagId is not null;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        var id = ++requestId;
+        loading = true;
+        error = null;
+        var query = new ModDbQuery(searchText, sort, ascending, selectedTags.ToList(), compatibleOnly ? gameVersionTagId : null);
+        try
+        {
+            var found = await ModDb.BrowseAsync(query);
+            if (id != requestId)
+            {
+                return; // a newer search has started
+            }
+
+            results = found;
+            pageData = ModDbBrowsing.Page(results, filter, 1, PageSize);
+        }
+        catch (Exception ex)
+        {
+            if (id == requestId)
+            {
+                error = ex.Message;
+                results = [];
+                pageData = ModDbBrowsing.Page(results, filter, 1, PageSize);
+            }
+        }
+        finally
+        {
+            if (id == requestId)
+            {
+                loading = false;
+            }
+        }
+    }
+
+    private Task OnSearchTextChanged(string? value)
+    {
+        searchText = value ?? "";
+        return LoadAsync();
+    }
+
+    private Task OnSortChanged(ModDbSort value)
+    {
+        sort = value;
+        return LoadAsync();
+    }
+
+    private Task ToggleDirectionAsync()
+    {
+        ascending = !ascending;
+        return LoadAsync();
+    }
+
+    private Task OnTagsChanged(IReadOnlyCollection<long>? values)
+    {
+        selectedTags = values?.ToList() ?? [];
+        return LoadAsync();
+    }
+
+    private Task OnCompatibleChanged(bool value)
+    {
+        compatibleOnly = value;
+        return LoadAsync();
+    }
+
+    private void SetFilter(ModDbLocalFilter value)
+    {
+        filter = value;
+        pageData = ModDbBrowsing.Page(results, filter, 1, PageSize);
+    }
+
+    private async Task OnPageChanged(int page)
+    {
+        pageData = ModDbBrowsing.Page(results, filter, page, PageSize);
+        await ScrollManager.ScrollIntoViewAsync("#moddb-top", ScrollBehavior.Smooth);
+    }
+
+    private bool IsInstalled(ModDbSearchResult mod) => mod.ModIdStrings.Any(InstalledModIds.Contains);
+
+    private async Task ShowDetailsAsync(ModDbSearchResult mod)
+    {
+        var parameters = new DialogParameters<ModDetailsDialog>
+        {
+            { d => d.ModKey, mod.Key },
+            { d => d.Summary, mod.Summary },
+            { d => d.GameVersion, GameVersion },
+            { d => d.Installed, IsInstalled(mod) },
+            { d => d.CanInstall, CanInstall && !Busy },
+        };
+        var options = new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true, CloseButton = true, CloseOnEscapeKey = true };
+        var dialog = await Dialogs.ShowAsync<ModDetailsDialog>(mod.Name, parameters, options);
+        var result = await dialog.Result;
+        if (result is { Canceled: false, Data: string key })
+        {
+            await OnInstall.InvokeAsync(key);
+        }
+    }
+
+    private string TagSummary(IReadOnlyList<string> values)
+    {
+        var names = values.Select(v => long.TryParse(v, out var id) ? tags.FirstOrDefault(t => t.Id == id)?.Name ?? v : v).ToList();
+        return names.Count switch
+        {
+            0 => "",
+            <= 2 => string.Join(", ", names),
+            _ => $"{names[0]}, {names[1]} +{names.Count - 2}",
+        };
+    }
+
+    private static string Compact(int value) => value switch
+    {
+        >= 1_000_000 => $"{value / 1_000_000d:0.#}M",
+        >= 1_000 => $"{value / 1_000d:0.#}k",
+        _ => value.ToString(),
+    };
+
+    internal static string Ago(string? timestamp)
+    {
+        if (!DateTime.TryParse(timestamp, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal, out var when))
+        {
+            return "–";
+        }
+
+        var age = DateTime.UtcNow - when.ToUniversalTime();
+        return age.TotalDays switch
+        {
+            < 1 => "today",
+            < 2 => "yesterday",
+            < 31 => $"{(int)age.TotalDays}d ago",
+            < 365 => $"{(int)(age.TotalDays / 30)}mo ago",
+            _ => $"{(int)(age.TotalDays / 365)}y ago",
+        };
+    }
+}
