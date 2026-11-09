@@ -74,6 +74,37 @@ Health check: `GET /healthz`.
 
 Keep `stop_grace_period: 2m` (as in `compose.yaml`) so the game server has time to save when the container stops.
 
+### Running with Podman
+
+The image runs under rootless Podman as it is. Two differences from Docker:
+
+- **Data folder ownership:** use `podman unshare chown` instead of `sudo chown`. Rootless Podman maps container UIDs into your own user namespace.
+- **Ports:** if something on the host already uses port 80 or 8080 (for example a local dev proxy), publish the UI on another port such as 8090.
+
+```bash
+mkdir -p ~/vs-test/data && podman unshare chown 1654:1654 ~/vs-test/data
+
+podman build -t vssm:dev .
+
+podman run -d --name vssm \
+  -p 8090:8080 -p 42420:42420/tcp -p 42420:42420/udp \
+  -e Admin__Username=admin -e Admin__Password='Choose-a-Passw0rd!' \
+  -v ~/vs-test/data:/data:Z \
+  --stop-timeout 120 \
+  vssm:dev
+```
+
+Then open http://localhost:8090. Connect a game client to `localhost:42420`.
+
+| Command | Does |
+|---|---|
+| `podman logs -f vssm` | Follow the manager's log |
+| `podman stop vssm` | Stop the container; the game server saves first |
+| `podman start vssm` | Start it again with the same data |
+| `podman rm -f vssm` | Remove the container; `~/vs-test/data` is kept |
+
+To use `compose.yaml` instead, install a compose provider (`sudo apt install podman-compose`), change the UI port to a free one (e.g. `"8090:8080"`), and run `podman compose up -d --build`.
+
 ### Accounts and roles
 
 There is no public sign-up, and every page needs a login.
