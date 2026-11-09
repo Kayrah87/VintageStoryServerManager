@@ -1,0 +1,17 @@
+services:
+  vintagestory:
+    build:
+      context: .
+      args:
+        VS_VERSION: "1.22.7"
+    image: ghcr.io/kayrah87/vintagestoryservermanager:latest
+    container_name: vintagestory
+    restart: unless-stopped
+    ports:
+      - "80:8080"          # management web UI
+      - "42420:42420/tcp"  # game server
+      - "42420:42420/udp"
+    volumes:
+      # Worlds, mods, server config, manager database and backups.
+      # Mount the same folder into another container to move the server.
+      - ./data:/data

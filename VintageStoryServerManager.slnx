@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/VintageStoryServerManager.Core/VintageStoryServerManager.Core.csproj" />
+    <Project Path="src/VintageStoryServerManager.Infrastructure/VintageStoryServerManager.Infrastructure.csproj" />
+    <Project Path="src/VintageStoryServerManager.Web/VintageStoryServerManager.Web.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/VintageStoryServerManager.Tests/VintageStoryServerManager.Tests.csproj" />
+  </Folder>
+</Solution>
