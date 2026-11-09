@@ -7,10 +7,15 @@ COPY global.json VintageStoryServerManager.slnx ./
 COPY src/VintageStoryServerManager.Core/*.csproj src/VintageStoryServerManager.Core/
 COPY src/VintageStoryServerManager.Infrastructure/*.csproj src/VintageStoryServerManager.Infrastructure/
 COPY src/VintageStoryServerManager.Web/*.csproj src/VintageStoryServerManager.Web/
+# Restore from the project files alone so the package layer stays cached between source changes.
 RUN dotnet restore src/VintageStoryServerManager.Web/VintageStoryServerManager.Web.csproj
 COPY src/ src/
+# Publish restores again (no --no-restore): with only .csproj files present, the restore above
+# can't see the Razor components, so it leaves out the package that provides
+# _framework/blazor.web.js. Without that file nothing in the UI becomes interactive.
 RUN dotnet publish src/VintageStoryServerManager.Web/VintageStoryServerManager.Web.csproj \
-        -c Release -o /app --no-restore /p:UseAppHost=false
+        -c Release -o /app /p:UseAppHost=false \
+    && test -f /app/wwwroot/_framework/blazor.web.js
 
 # ---- Download the Vintage Story dedicated server ----------------------------
 FROM mcr.microsoft.com/dotnet/runtime-deps:10.0 AS vintagestory
