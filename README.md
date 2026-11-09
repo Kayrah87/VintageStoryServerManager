@@ -2,7 +2,7 @@
 
 A self-hosted Docker image that runs a [Vintage Story](https://www.vintagestory.at/) dedicated server **and** a web interface for managing it: server control, console, mods, backups and user accounts.
 
-> **Status:** early scaffold. The container, data layout and login are in place. The management features are being built (see [Roadmap](#roadmap)).
+> **Status:** early development. The container, data layout and user accounts are in place. The server management features are being built (see [Roadmap](#roadmap)).
 
 ## How it works
 
@@ -50,12 +50,34 @@ docker compose up -d --build
 
 Health check: `GET /healthz`.
 
+### Accounts
+
+There is no public sign-up. Every page needs a login, and only admins can add users (under **Users**).
+
+On first start, with no users in the database, the manager creates an admin account:
+
+- With `Admin__Username` and `Admin__Password` set, it uses those.
+- Without them, it creates `admin` with a random password and prints it once in the container log:
+
+  ```bash
+  docker compose logs vintagestory | grep "generated password"
+  ```
+
+These settings only apply to the very first start. Change your password afterwards under your account page.
+
+**Locked out?** Start the container once with `Admin__ResetPassword=true`, `Admin__Username` and `Admin__Password`. That account gets the new password, is unlocked and made an admin. Remove the setting afterwards.
+
+Five wrong passwords in a row lock an account for 15 minutes. An admin can unlock it straight away by setting a new password.
+
 ### Configuration
 
 | Variable | Default | Description |
 |---|---|---|
 | `DataPaths__Root` | `/data` | Root of the data volume |
 | `DataPaths__GameInstallDirectory` | `/opt/vintagestory` | Vintage Story server install |
+| `Admin__Username` | `admin` | First admin account, created when there are no users |
+| `Admin__Password` | *(generated)* | Password for the first admin |
+| `Admin__ResetPassword` | `false` | Recovery: reset the named admin's password on start |
 | `VS_VERSION` (build arg) | `1.22.7` | Server version baked into the image |
 | `VS_CHANNEL` (build arg) | `stable` | `stable` or `unstable` |
 | `VS_MD5` (build arg) | *(empty)* | Optional checksum from `https://api.vintagestory.at/stable.json` |
@@ -87,7 +109,7 @@ mkdir -p .vintagestory && curl -L https://cdn.vintagestory.at/gamefiles/stable/v
 
 ## Roadmap
 
-1. **Accounts:** seed the first admin from the environment, disable public registration, add admin and moderator roles.
+1. ~~**Accounts:** first admin from the environment, no public registration, admin user management.~~
 2. **Server control:** supervise `VintagestoryServer.dll`, with start, stop and restart, a live console, command input and status.
 3. **Mods (read-only):** scan `Mods/`, read `modinfo.json`, show versions, dependencies and compatibility warnings.
 4. **ModDB:** search, install and update mods with dependency resolution.

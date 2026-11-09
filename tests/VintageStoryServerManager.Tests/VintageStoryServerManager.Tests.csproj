@@ -21,6 +21,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\VintageStoryServerManager.Core\VintageStoryServerManager.Core.csproj" />
     <ProjectReference Include="..\..\src\VintageStoryServerManager.Infrastructure\VintageStoryServerManager.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\VintageStoryServerManager.Web\VintageStoryServerManager.Web.csproj" />
   </ItemGroup>
 
 </Project>

@@ -17,6 +17,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="VintageStoryServerManager.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\VintageStoryServerManager.Core\VintageStoryServerManager.Core.csproj" />
     <ProjectReference Include="..\VintageStoryServerManager.Infrastructure\VintageStoryServerManager.Infrastructure.csproj" />
   </ItemGroup>

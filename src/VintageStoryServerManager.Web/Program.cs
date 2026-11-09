@@ -58,11 +58,23 @@ builder.Services.AddIdentityCore<ApplicationUser>(options =>
         options.SignIn.RequireConfirmedAccount = false;
         options.Stores.SchemaVersion = IdentitySchemaVersions.Version3;
     })
+    .AddRoles<IdentityRole>()
     .AddEntityFrameworkStores<ApplicationDbContext>()
     .AddSignInManager()
     .AddDefaultTokenProviders();
 
 builder.Services.AddSingleton<IEmailSender<ApplicationUser>, IdentityNoOpEmailSender>();
+
+builder.Services.Configure<IdentityOptions>(options =>
+{
+    options.Lockout.MaxFailedAccessAttempts = 5;
+    options.Lockout.DefaultLockoutTimeSpan = TimeSpan.FromMinutes(15);
+});
+
+// Accounts are created by admins only; the first admin comes from the Admin__* settings.
+builder.Services.Configure<AdminSeedOptions>(builder.Configuration.GetSection(AdminSeedOptions.SectionName));
+builder.Services.AddScoped<IdentitySeeder>();
+builder.Services.AddSingleton<UserAdministrationService>();
 
 var app = builder.Build();
 
@@ -71,6 +83,7 @@ _ = app.Services.GetRequiredService<IOptions<DataPathOptions>>().Value;
 using (var scope = app.Services.CreateScope())
 {
     scope.ServiceProvider.GetRequiredService<ApplicationDbContext>().Database.Migrate();
+    await scope.ServiceProvider.GetRequiredService<IdentitySeeder>().SeedAsync();
 }
 
 app.UseForwardedHeaders();
@@ -86,6 +99,11 @@ else
 }
 app.UseStatusCodePagesWithReExecute("/not-found", createScopeForStatusCodePages: true);
 
+// Explicit (rather than implicit, at the start of the pipeline) so that the re-executed
+// /not-found request above also passes through authorisation.
+app.UseAuthentication();
+app.UseAuthorization();
+
 app.MapHealthChecks("/healthz");
 
 app.UseAntiforgery();
@@ -97,4 +115,4 @@ app.MapRazorComponents<App>()
 // Add additional endpoints required by the Identity /Account Razor components.
 app.MapAdditionalIdentityEndpoints();
 
-app.Run();
+await app.RunAsync();

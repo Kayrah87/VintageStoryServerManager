@@ -1,7 +1,11 @@
-﻿@page "/"
+@page "/"
 
-<PageTitle>Home</PageTitle>
+<PageTitle>Vintage Story Server Manager</PageTitle>
 
-<h1>Hello, world!</h1>
+<h1>Vintage Story Server Manager</h1>
 
-Welcome to your new app.
+<AuthorizeView>
+    <p>Signed in as <strong>@context.User.Identity?.Name</strong>.</p>
+</AuthorizeView>
+
+<p>Server control, console and mod management are coming next.</p>
