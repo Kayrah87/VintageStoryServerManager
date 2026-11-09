@@ -41,6 +41,12 @@ public sealed record WorldSettingDefinition(
         };
     }
 
+    /// <summary>The type <c>/worldconfigcreate</c> needs to add this setting to a world that lacks it.</summary>
+    public string CreateType =>
+        Type == WorldSettingType.Bool ? "bool"
+        : Options.Count > 0 && Options.All(o => double.TryParse(o.Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out _)) ? "double"
+        : "string";
+
     public string LabelFor(string? value) =>
         Type == WorldSettingType.Bool
             ? (Normalize(value) == "true" ? "On" : "Off")
@@ -61,8 +67,14 @@ public sealed record WorldSettingsSchema(
     public string CategoryLabel(string category) => CategoryLabels.GetValueOrDefault(category) ?? category;
 }
 
-/// <summary>World setting values read from the running server.</summary>
-public sealed record WorldSettingValues(IReadOnlyDictionary<string, string> Values, DateTimeOffset ReadAt);
+/// <summary>
+/// World setting values read from the running server. <paramref name="NotSet"/> lists settings the
+/// world doesn't store (it was created without them), so the game uses their default.
+/// </summary>
+public sealed record WorldSettingValues(IReadOnlyDictionary<string, string> Values, DateTimeOffset ReadAt, IReadOnlyList<string>? NotSet = null)
+{
+    public bool IsNotSet(string code) => NotSet?.Contains(code, StringComparer.OrdinalIgnoreCase) == true;
+}
 
 public static partial class WorldSettingsParser
 {
@@ -141,13 +153,42 @@ public static partial class WorldSettingsParser
         return new WorldSettingsSchema(settings, categories, playStyles);
     }
 
+    /// <summary>
+    /// Replies come from the server itself: date, time, then [Server Notification]. Anchoring on
+    /// that keeps chat lines ("[Server Chat] … Ok, value x set") from passing as replies.
+    /// </summary>
+    private const string Notification = @"^\S+ \S+ \[Server Notification\] ";
+
     // 9.11.2026 11:07:27 [Server Notification] temporalStorms currently has value: sometimes
-    [GeneratedRegex(@"\] (?<code>[A-Za-z0-9_.\-]+) currently has value: (?<value>.*)$")]
+    [GeneratedRegex(Notification + @"(?<code>[A-Za-z0-9_.\-]+) currently has value: (?<value>.*)$")]
     private static partial Regex CurrentValueRegex();
 
     // 9.11.2026 11:07:29 [Server Notification] Ok, value rare set. Restart game world or server to apply changes.
-    [GeneratedRegex(@"\] Ok, value (?<value>.*) set\.")]
+    // 9.11.2026 16:24:40 [Server Notification] Ok, value True set          (from /worldconfigcreate)
+    [GeneratedRegex(Notification + @"Ok, value (?<value>.*) set(\.|$)")]
     private static partial Regex ValueSetRegex();
+
+    // 9.11.2026 16:24:34 [Server Notification] No such config found: allowLandClaiming
+    [GeneratedRegex(Notification + @"No such config found: (?<code>\S+)\s*$")]
+    private static partial Regex NotSetRegex();
+
+    // 9.11.2026 16:29:36 [Server Notification] Changing world size is not supported
+    [GeneratedRegex(Notification + @"Changing world size is not supported")]
+    private static partial Regex WorldSizeRegex();
+
+    /// <summary>
+    /// The game's reply to /worldconfig worldWidth or worldLength: it neither shows nor changes
+    /// the world size.
+    /// </summary>
+    public static bool IsWorldSizeRefusal(string line) => WorldSizeRegex().IsMatch(line);
+
+    /// <summary>The reply to reading or changing a setting the world doesn't store.</summary>
+    public static bool TryParseNotSet(string line, out string code)
+    {
+        var match = NotSetRegex().Match(line);
+        code = match.Success ? match.Groups["code"].Value : "";
+        return match.Success;
+    }
 
     public static bool TryParseCurrentValue(string line, out string code, out string value)
     {

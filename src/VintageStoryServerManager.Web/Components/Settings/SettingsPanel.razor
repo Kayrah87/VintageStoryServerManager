@@ -180,6 +180,7 @@
                                     var current = CurrentWorldValue(setting);
                                     var value = worldEdits.GetValueOrDefault(setting.Code) ?? current;
                                     var known = current is not null;
+                                    var notSet = worldValues?.IsNotSet(setting.Code) == true;
                                     <div class="setting-row world-setting @(worldEdits.ContainsKey(setting.Code) ? "setting-row-edited" : "")">
                                         <div class="world-setting-label">
                                             <MudText Typo="Typo.body1">@setting.Label</MudText>
@@ -191,17 +192,25 @@
                                             {
                                                 <MudText Typo="Typo.caption" Color="Color.Warning" Class="d-block">Set when the world was created; can't be changed.</MudText>
                                             }
+                                            else if (notSet)
+                                            {
+                                                <MudText Typo="Typo.caption" Color="Color.Info" Class="d-block">Not stored in this world, so the game uses its default. Saving a change adds it.</MudText>
+                                            }
+                                            else if (!known && worldLive)
+                                            {
+                                                <MudText Typo="Typo.caption" Color="Color.Warning" Class="d-block">The server didn't report this value. You can still set it.</MudText>
+                                            }
                                         </div>
                                         <div class="world-setting-control">
                                             @if (setting.Type == WorldSettingType.Bool)
                                             {
                                                 <MudSwitch T="bool" Value="IsOn(setting, value)" ValueChanged="v => SetWorldBool(setting, v)"
-                                                           Color="Color.Primary" Disabled="!CanEditWorld || setting.OnlyDuringWorldCreate || !known" />
+                                                           Color="Color.Primary" Disabled="!CanEditWorld || setting.OnlyDuringWorldCreate" />
                                             }
                                             else
                                             {
                                                 <MudSelect T="string" Value="value" ValueChanged="v => SetWorld(setting, v)" Variant="Variant.Outlined" Margin="Margin.Dense"
-                                                           Placeholder="@(known ? null : "Unknown")" Disabled="!CanEditWorld || setting.OnlyDuringWorldCreate || !known"
+                                                           Placeholder="@(known ? null : "Unknown")" Disabled="!CanEditWorld || setting.OnlyDuringWorldCreate"
                                                            ToStringFunc="v => setting.LabelFor(v)">
                                                     @foreach (var option in setting.Options)
                                                     {
@@ -310,7 +319,8 @@
 
     private string? CurrentWorldValue(WorldSettingDefinition setting)
     {
-        var raw = worldValues?.Values.GetValueOrDefault(setting.Code);
+        var raw = worldValues?.Values.GetValueOrDefault(setting.Code)
+            ?? (worldValues?.IsNotSet(setting.Code) == true ? setting.Default : null);
         return raw is null ? null : setting.Normalize(raw) ?? raw;
     }
 

@@ -71,22 +71,47 @@ public sealed class WorldSettingsTests : IDisposable
             var parts = command.Split(' ', StringSplitOptions.RemoveEmptyEntries);
             if (parts is ["/worldconfig", var code])
             {
-                return [$"9.11.2026 11:07:27 [Server Notification] {code} currently has value: {_worldState[code]}"];
+                if (_silent.Contains(code))
+                {
+                    return [];
+                }
+
+                return _worldState.TryGetValue(code, out var current)
+                    ? [$"9.11.2026 11:07:27 [Server Notification] {code} currently has value: {current}"]
+                    : [$"9.11.2026 16:24:34 [Server Notification] No such config found: {code}"];
             }
 
             if (parts is ["/worldconfig", var key, var value])
             {
+                if (!_worldState.ContainsKey(key))
+                {
+                    return [$"9.11.2026 16:24:38 [Server Notification] No such config found: {key}"];
+                }
+
                 _worldState[key] = value;
                 return [$"9.11.2026 11:07:29 [Server Notification] Ok, value {value} set. Restart game world or server to apply changes."];
+            }
+
+            if (parts is ["/worldconfigcreate", var type, var newKey, var newValue])
+            {
+                _created.Add($"{type} {newKey}");
+                _worldState[newKey] = newValue;
+                return [$"9.11.2026 16:24:40 [Server Notification] Ok, value {newValue} set"];
             }
 
             return [];
         };
     }
 
+    private readonly HashSet<string> _silent = new(StringComparer.OrdinalIgnoreCase);
+    private readonly List<string> _created = [];
+
     private WorldSettingsService Service => new(
         new FakeGameInstallation(directory: _root.Paths.GameInstallDirectory), _server, _root.Options, TimeProvider.System,
-        NullLogger<WorldSettingsService>.Instance);
+        NullLogger<WorldSettingsService>.Instance)
+    {
+        ResponseTimeout = TimeSpan.FromMilliseconds(200),
+    };
 
     [Fact]
     public void Extracts_definitions_from_assembly_bytes_and_builds_the_schema()
@@ -120,6 +145,9 @@ public sealed class WorldSettingsTests : IDisposable
         Assert.Null(schema.Find("temporalStorms")!.Normalize("bogus"));
         Assert.Equal("true", schema.Find("allowCoordinateHud")!.Normalize("True"));
         Assert.Null(schema.Find("allowCoordinateHud")!.Normalize("maybe"));
+        Assert.Equal("double", schema.Find("playerHealthPoints")!.CreateType);
+        Assert.Equal("string", schema.Find("temporalStorms")!.CreateType);
+        Assert.Equal("bool", schema.Find("allowCoordinateHud")!.CreateType);
     }
 
     [Fact]
@@ -133,6 +161,42 @@ public sealed class WorldSettingsTests : IDisposable
         Assert.Equal("sometimes", values.Values["temporalStorms"]);
         Assert.Equal(5, _server.Commands.Count);
         Assert.Equal("sometimes", Service.GetCached()!.Values["temporalStorms"]);
+    }
+
+    [Fact]
+    public async Task Settings_the_world_lacks_use_the_default_and_are_added_when_changed()
+    {
+        // A world can be created without some settings; the game then answers "No such config found".
+        _worldState.Remove("temporalStorms");
+        _worldState.Remove("allowCoordinateHud");
+        _server.SetStatus(ServerStatus.Running);
+
+        var values = await Service.ReadCurrentAsync();
+
+        Assert.True(values.IsNotSet("temporalStorms"));
+        Assert.True(values.IsNotSet("allowCoordinateHud"));
+        Assert.Equal("realistic", values.Values["worldClimate"]); // later settings are still read
+
+        await Service.ApplyAsync(new Dictionary<string, string> { ["temporalStorms"] = "rare", ["allowCoordinateHud"] = "true" });
+
+        Assert.Equal(["string temporalStorms", "bool allowCoordinateHud"], _created);
+        Assert.Equal("rare", _worldState["temporalStorms"]);
+        var cached = Service.GetCached()!;
+        Assert.False(cached.IsNotSet("temporalStorms"));
+        Assert.Equal("true", cached.Values["allowCoordinateHud"]);
+    }
+
+    [Fact]
+    public async Task One_unanswered_setting_does_not_stop_the_rest_being_read()
+    {
+        _silent.Add("temporalStorms");
+        _server.SetStatus(ServerStatus.Running);
+
+        var values = await Service.ReadCurrentAsync();
+
+        Assert.False(values.Values.ContainsKey("temporalStorms"));
+        Assert.False(values.IsNotSet("temporalStorms"));
+        Assert.Equal(4, values.Values.Count);
     }
 
     [Fact]
@@ -240,6 +304,12 @@ public sealed class WorldSettingsTests : IDisposable
         Assert.Equal(("temporalStorms", "sometimes"), (code, value));
         Assert.True(WorldSettingsParser.IsValueSetConfirmation("9.11.2026 11:07:29 [Server Notification] Ok, value rare set. Restart game world or server to apply changes."));
         Assert.False(WorldSettingsParser.IsValueSetConfirmation("[Server Chat] Ok, value rare set"));
+        Assert.False(WorldSettingsParser.IsValueSetConfirmation("9.11.2026 11:07:29 [Server Chat] 0 | kay: [Server Notification] Ok, value rare set"));
+        Assert.True(WorldSettingsParser.IsValueSetConfirmation("9.11.2026 16:24:40 [Server Notification] Ok, value True set"));
+        Assert.True(WorldSettingsParser.TryParseNotSet("9.11.2026 16:24:34 [Server Notification] No such config found: allowLandClaiming", out var missing));
+        Assert.Equal("allowLandClaiming", missing);
+        Assert.False(WorldSettingsParser.TryParseNotSet("9.11.2026 16:24:34 [Server Chat] 0 | kay: No such config found: x", out _));
+        Assert.True(WorldSettingsParser.IsWorldSizeRefusal("9.11.2026 16:29:36 [Server Notification] Changing world size is not supported"));
     }
 
     /// <summary>Surrounds the JSON with binary noise and stray braces, as in a real assembly.</summary>

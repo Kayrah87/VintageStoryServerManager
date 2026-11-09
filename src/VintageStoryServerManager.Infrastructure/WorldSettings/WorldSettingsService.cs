@@ -24,7 +24,10 @@ public sealed class WorldSettingsService(
     ILogger<WorldSettingsService> logger)
 {
     /// <summary>How long to wait for the server's reply to one command.</summary>
-    private static readonly TimeSpan ResponseTimeout = TimeSpan.FromSeconds(5);
+    internal TimeSpan ResponseTimeout { get; init; } = TimeSpan.FromSeconds(10);
+
+    /// <summary>Unanswered commands in a row after which the server is treated as not responding.</summary>
+    private const int MaxMissedReplies = 3;
     private static readonly System.Text.Json.JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
     private readonly Lock _schemaGate = new();
@@ -97,30 +100,45 @@ public sealed class WorldSettingsService(
         // several queued console lines as one command, which would turn "/worldconfig a" followed by
         // "/worldconfig b" into setting a to "/worldconfig b".
         var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var notSet = new List<string>();
+        var missed = 0;
         foreach (var setting in schema.Settings)
         {
             var reply = await SendAndAwaitReplyAsync(
                 $"/worldconfig {setting.Code}",
-                text => WorldSettingsParser.TryParseCurrentValue(text, out var code, out _) &&
-                        string.Equals(code, setting.Code, StringComparison.OrdinalIgnoreCase),
+                text => IsReplyFor(text, setting.Code),
                 cancellationToken);
             if (reply is null)
             {
-                break; // the server stopped answering; keep what was read
+                // Keep going: one slow or lost reply shouldn't leave every later setting unread.
+                if (++missed >= MaxMissedReplies)
+                {
+                    logger.LogWarning("The server stopped answering /worldconfig; read {Count} of {Total} settings", values.Count + notSet.Count, schema.Settings.Count);
+                    break;
+                }
+
+                continue;
             }
 
+            missed = 0;
             if (WorldSettingsParser.TryParseCurrentValue(reply, out _, out var value))
             {
                 values[setting.Code] = value;
             }
+            else if (WorldSettingsParser.TryParseNotSet(reply, out _))
+            {
+                notSet.Add(setting.Code);
+            }
+
+            // Otherwise the game won't say (world size): the value stays unknown.
         }
 
-        if (values.Count == 0)
+        if (values.Count == 0 && notSet.Count == 0)
         {
             throw new TimeoutException("The server didn't report any world settings. Is it still starting?");
         }
 
-        var result = new WorldSettingValues(values, time.GetUtcNow());
+        var result = new WorldSettingValues(values, time.GetUtcNow(), notSet);
         SaveCache(result);
         return result;
     }
@@ -154,9 +172,27 @@ public sealed class WorldSettingsService(
 
         // One command at a time, each after the previous confirmation (see ReadCurrentAsync).
         var confirmed = 0;
+        var created = new List<string>();
         foreach (var (code, value) in commands)
         {
-            var reply = await SendAndAwaitReplyAsync($"/worldconfig {code} {value}", WorldSettingsParser.IsValueSetConfirmation, cancellationToken);
+            var reply = await SendAndAwaitReplyAsync(
+                $"/worldconfig {code} {value}",
+                text => WorldSettingsParser.IsValueSetConfirmation(text) || WorldSettingsParser.TryParseNotSet(text, out var missing) && Same(missing, code),
+                cancellationToken);
+            if (reply is not null && WorldSettingsParser.TryParseNotSet(reply, out _))
+            {
+                // The world was created without this setting; /worldconfig only changes existing ones.
+                var definition = schema.Find(code)!;
+                reply = await SendAndAwaitReplyAsync(
+                    $"/worldconfigcreate {definition.CreateType} {code} {value}",
+                    WorldSettingsParser.IsValueSetConfirmation,
+                    cancellationToken);
+                if (reply is not null)
+                {
+                    created.Add(code);
+                }
+            }
+
             if (reply is null)
             {
                 break;
@@ -170,7 +206,8 @@ public sealed class WorldSettingsService(
             throw new InvalidOperationException($"The server confirmed {confirmed} of {commands.Count} world setting changes. Check the console.");
         }
 
-        logger.LogInformation("Changed world settings: {Changes}", string.Join(", ", commands.Select(c => $"{c.Code}={c.Value}")));
+        logger.LogInformation("Changed world settings: {Changes}{Created}", string.Join(", ", commands.Select(c => $"{c.Code}={c.Value}")),
+            created.Count == 0 ? "" : $" (added to the world: {string.Join(", ", created)})");
 
         var cached = GetCached();
         var updated = new Dictionary<string, string>(cached?.Values ?? new Dictionary<string, string>(), StringComparer.OrdinalIgnoreCase);
@@ -179,8 +216,17 @@ public sealed class WorldSettingsService(
             updated[code] = value;
         }
 
-        SaveCache(new WorldSettingValues(updated, time.GetUtcNow()));
+        var stillNotSet = (cached?.NotSet ?? []).Where(c => !commands.Any(command => Same(command.Code, c))).ToList();
+        SaveCache(new WorldSettingValues(updated, time.GetUtcNow(), stillNotSet));
     }
+
+    private static bool Same(string a, string b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>"x currently has value: …", "No such config found: x", or the world size refusal.</summary>
+    private static bool IsReplyFor(string text, string code) =>
+        WorldSettingsParser.TryParseCurrentValue(text, out var current, out _) && Same(current, code) ||
+        WorldSettingsParser.TryParseNotSet(text, out var missing) && Same(missing, code) ||
+        WorldSettingsParser.IsWorldSizeRefusal(text);
 
     /// <summary>
     /// Sends a console command and waits for the first output line that <paramref name="isReply"/>
