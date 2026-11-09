@@ -34,7 +34,7 @@ public sealed class ModDbClientTests
         var first = await client.BrowseAsync(query);
         var second = await client.BrowseAsync(query);
 
-        Assert.Equal(1, handler.Requests.Count);
+        Assert.Single(handler.Requests);
         Assert.Same(first, second);
         var ruins = first[0];
         Assert.Equal("betterruins", ruins.Key);
