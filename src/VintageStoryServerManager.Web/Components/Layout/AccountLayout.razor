@@ -1,0 +1,16 @@
+@inherits LayoutComponentBase
+
+<header class="account-header">
+    <div class="container d-flex align-items-center justify-content-between py-2">
+        <a class="account-brand" href="">Vintage Story Server Manager</a>
+        <AuthorizeView>
+            <Authorized>
+                <a class="link-light" href="">Back to dashboard</a>
+            </Authorized>
+        </AuthorizeView>
+    </div>
+</header>
+
+<main class="container py-4">
+    @Body
+</main>

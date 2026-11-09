@@ -1,11 +1,194 @@
 @page "/"
+@implements IDisposable
 
-<PageTitle>Vintage Story Server Manager</PageTitle>
+@using VintageStoryServerManager.Core.Backups
+@using VintageStoryServerManager.Core.Mods
+@using VintageStoryServerManager.Infrastructure.Config
+@using VintageStoryServerManager.Infrastructure.Mods
 
-<h1>Vintage Story Server Manager</h1>
+@inject IGameServer Server
+@inject ModLibrary Mods
+@inject IBackupService Backups
+@inject ServerConfigService Config
+@inject ISnackbar Snackbar
 
-<AuthorizeView>
-    <p>Signed in as <strong>@context.User.Identity?.Name</strong>.</p>
-</AuthorizeView>
+<PageTitle>Dashboard</PageTitle>
 
-<p>Server control, console and mod management are coming next.</p>
+<MudText Typo="Typo.h4" GutterBottom="true">@(serverName ?? "Dashboard")</MudText>
+
+<MudGrid>
+    <MudItem xs="12" md="6">
+        <MudPaper Class="pa-4" Elevation="1" Style="height:100%">
+            <div class="d-flex align-center mb-3">
+                <MudText Typo="Typo.h6">Server</MudText>
+                <MudSpacer />
+                <MudChip T="string" Color="@ServerDisplay.StatusColor(snapshot.Status)" Variant="Variant.Filled">
+                    @ServerDisplay.StatusLabel(snapshot.Status)
+                </MudChip>
+            </div>
+
+            <MudSimpleTable Dense="true" Elevation="0" Class="mb-4">
+                <tbody>
+                    <tr><td>Game version</td><td>@(snapshot.GameVersion ?? Mods.GameVersion ?? "unknown")</td></tr>
+                    <tr><td>Uptime</td><td>@(snapshot.Uptime is { } up ? ServerDisplay.Duration(up) : "–")</td></tr>
+                    <tr><td>Port</td><td>@(snapshot.Port?.ToString() ?? configuredPort?.ToString() ?? "–")</td></tr>
+                    <tr><td>Players online</td><td>@snapshot.OnlinePlayers.Count@(maxClients is { } max ? $" / {max}" : "")</td></tr>
+                    @if (snapshot.LastError is { } error)
+                    {
+                        <tr><td>Last problem</td><td><MudText Color="Color.Error" Typo="Typo.body2">@error</MudText></td></tr>
+                    }
+                </tbody>
+            </MudSimpleTable>
+
+            <AuthorizeView Roles="@Roles.OperatorOrAdmin">
+                <Authorized>
+                    <div class="d-flex gap-2 flex-wrap">
+                        <MudButton Variant="Variant.Filled" Color="Color.Success" StartIcon="@Icons.Material.Filled.PlayArrow"
+                                   Disabled="busy || snapshot.IsRunning || snapshot.Status == ServerStatus.Stopping" OnClick="StartAsync">Start</MudButton>
+                        <MudButton Variant="Variant.Filled" Color="Color.Error" StartIcon="@Icons.Material.Filled.Stop"
+                                   Disabled="busy || !snapshot.IsRunning" OnClick="StopAsync">Stop</MudButton>
+                        <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.RestartAlt"
+                                   Disabled="busy || !snapshot.IsRunning" OnClick="RestartAsync">Restart</MudButton>
+                        <MudButton Variant="Variant.Text" Href="console" StartIcon="@Icons.Material.Filled.Terminal">Console</MudButton>
+                    </div>
+                </Authorized>
+            </AuthorizeView>
+        </MudPaper>
+    </MudItem>
+
+    <MudItem xs="12" md="6">
+        <MudPaper Class="pa-4" Elevation="1" Style="height:100%">
+            <MudText Typo="Typo.h6" GutterBottom="true">Players online</MudText>
+            @if (snapshot.OnlinePlayers.Count == 0)
+            {
+                <MudText Color="Color.Secondary">Nobody is online.</MudText>
+            }
+            else
+            {
+                <div class="d-flex flex-wrap gap-1">
+                    @foreach (var player in snapshot.OnlinePlayers)
+                    {
+                        <MudChip T="string" Icon="@Icons.Material.Filled.Person">@player</MudChip>
+                    }
+                </div>
+            }
+        </MudPaper>
+    </MudItem>
+
+    <MudItem xs="12" md="6">
+        <MudPaper Class="pa-4" Elevation="1">
+            <div class="d-flex align-center mb-2">
+                <MudText Typo="Typo.h6">Mods</MudText>
+                <MudSpacer />
+                <MudButton Href="mods" Variant="Variant.Text">Manage</MudButton>
+            </div>
+            @if (modReport is not null)
+            {
+                <MudText>@modReport.Mods.Count(m => m.Enabled) enabled, @modReport.Mods.Count(m => !m.Enabled) disabled.</MudText>
+                @if (modReport.ErrorCount > 0)
+                {
+                    <MudAlert Severity="Severity.Error" Dense="true" Class="mt-2">
+                        @modReport.ErrorCount mod problem@(modReport.ErrorCount == 1 ? "" : "s") that can stop the server loading. See the Mods page.
+                    </MudAlert>
+                }
+                else if (modReport.WarningCount > 0)
+                {
+                    <MudAlert Severity="Severity.Warning" Dense="true" Class="mt-2">@modReport.WarningCount mod warning@(modReport.WarningCount == 1 ? "" : "s").</MudAlert>
+                }
+                else
+                {
+                    <MudAlert Severity="Severity.Success" Dense="true" Class="mt-2">No mod problems found.</MudAlert>
+                }
+            }
+        </MudPaper>
+    </MudItem>
+
+    <MudItem xs="12" md="6">
+        <MudPaper Class="pa-4" Elevation="1">
+            <div class="d-flex align-center mb-2">
+                <MudText Typo="Typo.h6">Backups</MudText>
+                <MudSpacer />
+                <AuthorizeView Roles="@Roles.Admin">
+                    <MudButton Href="backups" Variant="Variant.Text">Manage</MudButton>
+                </AuthorizeView>
+            </div>
+            @if (latestBackup is null)
+            {
+                <MudText Color="Color.Secondary">No backups yet.</MudText>
+            }
+            else
+            {
+                <MudText>Latest: @latestBackup.CreatedAt.ToLocalTime().ToString("g") (@ServerDisplay.Scope(latestBackup.Scope), @(latestBackup.Automatic ? "automatic" : "manual"))</MudText>
+                <MudText Typo="Typo.body2" Color="Color.Secondary">@backupCount backup@(backupCount == 1 ? "" : "s") stored.</MudText>
+            }
+        </MudPaper>
+    </MudItem>
+</MudGrid>
+
+@code {
+    private ServerSnapshot snapshot = default!;
+    private ModScanReport? modReport;
+    private BackupInfo? latestBackup;
+    private int backupCount;
+    private string? serverName;
+    private int? configuredPort;
+    private int? maxClients;
+    private bool busy;
+    private Timer? uptimeTimer;
+
+    protected override async Task OnInitializedAsync()
+    {
+        snapshot = Server.Snapshot;
+        Server.StatusChanged += OnStatusChanged;
+
+        modReport = Mods.Scan();
+        var backups = await Backups.ListAsync();
+        latestBackup = backups.FirstOrDefault();
+        backupCount = backups.Count;
+
+        if (Config.TryReadObject() is { } config)
+        {
+            serverName = config["ServerName"]?.ToString();
+            configuredPort = config["Port"] is { } port && int.TryParse(port.ToString(), out var p) ? p : null;
+            maxClients = config["MaxClients"] is { } max && int.TryParse(max.ToString(), out var m) ? m : null;
+        }
+
+        uptimeTimer = new Timer(_ => InvokeAsync(StateHasChanged), null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
+    }
+
+    private void OnStatusChanged(ServerSnapshot updated)
+    {
+        snapshot = updated;
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    private Task StartAsync() => RunAsync(() => Server.StartAsync(), "Server starting.");
+
+    private Task StopAsync() => RunAsync(() => Server.StopAsync(), "Server stopped.");
+
+    private Task RestartAsync() => RunAsync(() => Server.RestartAsync(), "Server restarting.");
+
+    private async Task RunAsync(Func<Task> action, string message)
+    {
+        busy = true;
+        try
+        {
+            await action();
+            Snackbar.Add(message, Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    public void Dispose()
+    {
+        Server.StatusChanged -= OnStatusChanged;
+        uptimeTimer?.Dispose();
+    }
+}

@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using VintageStoryServerManager.Core.Configuration;
+using VintageStoryServerManager.Core.Security;
 using VintageStoryServerManager.Web.Data;
 
 namespace VintageStoryServerManager.Tests.Identity;
@@ -18,17 +19,28 @@ public sealed class UserAdministrationServiceTests
     }
 
     [Fact]
-    public async Task Creates_users_with_and_without_admin_role()
+    public async Task Creates_users_with_each_role()
     {
         var (host, admin, _) = await CreateAsync();
         await using var _host = host;
 
-        Assert.True((await admin.CreateAsync("player", Password, isAdmin: false)).Succeeded);
-        Assert.True((await admin.CreateAsync("helper", Password, isAdmin: true)).Succeeded);
+        Assert.True((await admin.CreateAsync("viewer", Password, role: null)).Succeeded);
+        Assert.True((await admin.CreateAsync("helper", Password, Roles.Operator)).Succeeded);
+        Assert.True((await admin.CreateAsync("boss", Password, Roles.Admin)).Succeeded);
 
         var users = await admin.ListAsync();
-        Assert.False(users.Single(u => u.UserName == "player").IsAdmin);
-        Assert.True(users.Single(u => u.UserName == "helper").IsAdmin);
+        Assert.Null(users.Single(u => u.UserName == "viewer").Role);
+        Assert.Equal(Roles.Operator, users.Single(u => u.UserName == "helper").Role);
+        Assert.Equal(Roles.Admin, users.Single(u => u.UserName == "boss").Role);
+    }
+
+    [Fact]
+    public async Task Rejects_unknown_role()
+    {
+        var (host, admin, _) = await CreateAsync();
+        await using var _host = host;
+
+        Assert.False((await admin.CreateAsync("someone", Password, "Superuser")).Succeeded);
     }
 
     [Fact]
@@ -37,8 +49,8 @@ public sealed class UserAdministrationServiceTests
         var (host, admin, _) = await CreateAsync();
         await using var _host = host;
 
-        var weak = await admin.CreateAsync("player", "short", isAdmin: false);
-        var duplicate = await admin.CreateAsync("admin", Password, isAdmin: false);
+        var weak = await admin.CreateAsync("player", "short", role: null);
+        var duplicate = await admin.CreateAsync("admin", Password, role: null);
 
         Assert.False(weak.Succeeded);
         Assert.False(duplicate.Succeeded);
@@ -51,21 +63,27 @@ public sealed class UserAdministrationServiceTests
         var (host, admin, adminId) = await CreateAsync();
         await using var _host = host;
 
-        Assert.False((await admin.SetAdminAsync(adminId, false, adminId)).Succeeded);
+        Assert.False((await admin.SetRoleAsync(adminId, null, adminId)).Succeeded);
         Assert.False((await admin.DeleteAsync(adminId, adminId)).Succeeded);
         Assert.True((await admin.ListAsync()).Single().IsAdmin);
     }
 
     [Fact]
-    public async Task Toggles_admin_role_and_deletes_other_users()
+    public async Task Changes_roles_and_deletes_other_users()
     {
         var (host, admin, adminId) = await CreateAsync();
         await using var _host = host;
-        await admin.CreateAsync("player", Password, isAdmin: false);
+        await admin.CreateAsync("player", Password, role: null);
         var playerId = (await admin.ListAsync()).Single(u => u.UserName == "player").Id;
 
-        Assert.True((await admin.SetAdminAsync(playerId, true, adminId)).Succeeded);
-        Assert.True((await admin.ListAsync()).Single(u => u.Id == playerId).IsAdmin);
+        Assert.True((await admin.SetRoleAsync(playerId, Roles.Operator, adminId)).Succeeded);
+        Assert.Equal(Roles.Operator, (await admin.ListAsync()).Single(u => u.Id == playerId).Role);
+
+        Assert.True((await admin.SetRoleAsync(playerId, Roles.Admin, adminId)).Succeeded);
+        Assert.Equal(Roles.Admin, (await admin.ListAsync()).Single(u => u.Id == playerId).Role);
+
+        Assert.True((await admin.SetRoleAsync(playerId, null, adminId)).Succeeded);
+        Assert.Null((await admin.ListAsync()).Single(u => u.Id == playerId).Role);
 
         Assert.True((await admin.DeleteAsync(playerId, adminId)).Succeeded);
         Assert.DoesNotContain(await admin.ListAsync(), u => u.Id == playerId);
@@ -76,7 +94,7 @@ public sealed class UserAdministrationServiceTests
     {
         var (host, admin, _) = await CreateAsync();
         await using var _host = host;
-        await admin.CreateAsync("player", Password, isAdmin: false);
+        await admin.CreateAsync("player", Password, role: null);
         var playerId = (await admin.ListAsync()).Single(u => u.UserName == "player").Id;
 
         Assert.True((await admin.ResetPasswordAsync(playerId, "An0ther-Password!")).Succeeded);

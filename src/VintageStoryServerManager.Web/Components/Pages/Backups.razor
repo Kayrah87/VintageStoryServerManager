@@ -1,0 +1,159 @@
+@page "/backups"
+@attribute [Authorize(Roles = Roles.Admin)]
+@implements IDisposable
+
+@using VintageStoryServerManager.Core.Backups
+
+@inject IBackupService BackupService
+@inject IGameServer Server
+@inject ISnackbar Snackbar
+@inject IDialogService Dialogs
+
+<PageTitle>Backups</PageTitle>
+
+<MudText Typo="Typo.h4" GutterBottom="true">Backups</MudText>
+<MudText Class="mb-4" Color="Color.Secondary">
+    The manager backs up your mods before every mod change, and whatever it replaces before a restore. World backups are safe to take
+    while the server is running. Backups are stored in <code>/data/backups</code>.
+</MudText>
+
+<MudPaper Class="pa-4 mb-6" Elevation="1">
+    <MudText Typo="Typo.h6" GutterBottom="true">Create a backup</MudText>
+    <MudGrid Spacing="2">
+        <MudItem xs="12" sm="3">
+            <MudSelect T="BackupScope" @bind-Value="scope" Label="Contents" Variant="Variant.Outlined" Margin="Margin.Dense">
+                <MudSelectItem T="BackupScope" Value="BackupScope.Full">Everything (world, mods, config)</MudSelectItem>
+                <MudSelectItem T="BackupScope" Value="BackupScope.World">World and player data</MudSelectItem>
+                <MudSelectItem T="BackupScope" Value="BackupScope.Mods">Mods</MudSelectItem>
+                <MudSelectItem T="BackupScope" Value="BackupScope.Config">Server and mod config</MudSelectItem>
+            </MudSelect>
+        </MudItem>
+        <MudItem xs="12" sm="6">
+            <MudTextField @bind-Value="label" Label="Label (optional)" Variant="Variant.Outlined" Margin="Margin.Dense" MaxLength="80" />
+        </MudItem>
+        <MudItem xs="12" sm="3" Class="d-flex align-center">
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" FullWidth="true" StartIcon="@Icons.Material.Filled.Backup"
+                       Disabled="busy" OnClick="CreateAsync">Back up now</MudButton>
+        </MudItem>
+    </MudGrid>
+    @if (busyMessage is not null)
+    {
+        <MudProgressLinear Color="Color.Primary" Indeterminate="true" Class="mt-3" />
+        <MudText Typo="Typo.body2" Class="mt-1">@busyMessage</MudText>
+    }
+</MudPaper>
+
+@if (snapshot.IsRunning)
+{
+    <MudAlert Severity="Severity.Info" Dense="true" Class="mb-3">Stop the server to restore a backup.</MudAlert>
+}
+
+<MudTable Items="backups" Loading="backups is null" Dense="true" Hover="true" Elevation="1" Breakpoint="Breakpoint.Sm">
+    <HeaderContent>
+        <MudTh>Created</MudTh>
+        <MudTh>Contents</MudTh>
+        <MudTh>Type</MudTh>
+        <MudTh>Label</MudTh>
+        <MudTh>Game</MudTh>
+        <MudTh>Size</MudTh>
+        <MudTh Style="text-align:right">Actions</MudTh>
+    </HeaderContent>
+    <RowTemplate>
+        <MudTd DataLabel="Created">@context.CreatedAt.ToLocalTime().ToString("g")</MudTd>
+        <MudTd DataLabel="Contents">@ServerDisplay.Scope(context.Scope)</MudTd>
+        <MudTd DataLabel="Type">
+            <MudChip T="string" Size="Size.Small" Color="@(context.Automatic ? Color.Default : Color.Primary)">@(context.Automatic ? "Automatic" : "Manual")</MudChip>
+        </MudTd>
+        <MudTd DataLabel="Label">@context.Label</MudTd>
+        <MudTd DataLabel="Game">@context.GameVersion</MudTd>
+        <MudTd DataLabel="Size">@ServerDisplay.Size(context.SizeBytes)</MudTd>
+        <MudTd Style="text-align:right; white-space:nowrap">
+            <MudIconButton Icon="@Icons.Material.Filled.Download" Size="Size.Small" Href="@($"api/backups/{Uri.EscapeDataString(context.FileName)}")"
+                           aria-label="Download" title="Download" />
+            <MudButton Size="Size.Small" Variant="Variant.Outlined" Color="Color.Warning" Disabled="busy || snapshot.IsRunning || snapshot.Status == ServerStatus.Stopping"
+                       OnClick="() => RestoreAsync(context)">Restore</MudButton>
+            <MudIconButton Icon="@Icons.Material.Filled.Delete" Color="Color.Error" Size="Size.Small" Disabled="busy"
+                           OnClick="() => DeleteAsync(context)" aria-label="Delete" title="Delete" />
+        </MudTd>
+    </RowTemplate>
+    <NoRecordsContent>
+        <MudText>No backups yet.</MudText>
+    </NoRecordsContent>
+</MudTable>
+
+@code {
+    private IReadOnlyList<BackupInfo>? backups;
+    private ServerSnapshot snapshot = default!;
+    private BackupScope scope = BackupScope.Full;
+    private string label = "";
+    private string? busyMessage;
+    private bool busy;
+
+    protected override async Task OnInitializedAsync()
+    {
+        snapshot = Server.Snapshot;
+        Server.StatusChanged += OnStatusChanged;
+        await LoadAsync();
+    }
+
+    private void OnStatusChanged(ServerSnapshot updated)
+    {
+        snapshot = updated;
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    private async Task LoadAsync() => backups = await BackupService.ListAsync();
+
+    private Task CreateAsync() => RunAsync("Creating backup…", async () =>
+    {
+        var info = await BackupService.CreateAsync(scope, string.IsNullOrWhiteSpace(label) ? null : label, automatic: false);
+        label = "";
+        Snackbar.Add($"Created {info.FileName} ({ServerDisplay.Size(info.SizeBytes)}).", Severity.Success);
+    });
+
+    private async Task RestoreAsync(BackupInfo backup)
+    {
+        var confirmed = await Dialogs.ShowMessageBoxAsync("Restore backup",
+            $"Replace the current {ServerDisplay.Scope(backup.Scope).ToLowerInvariant()} data with the backup from {backup.CreatedAt.ToLocalTime():g}? " +
+            "What's there now is backed up first.", yesText: "Restore", cancelText: "Cancel");
+        if (confirmed == true)
+        {
+            await RunAsync("Restoring…", async () =>
+            {
+                await BackupService.RestoreAsync(backup.FileName);
+                Snackbar.Add("Backup restored. Start the server to use it.", Severity.Success);
+            });
+        }
+    }
+
+    private async Task DeleteAsync(BackupInfo backup)
+    {
+        var confirmed = await Dialogs.ShowMessageBoxAsync("Delete backup", $"Delete {backup.FileName}? This can't be undone.", yesText: "Delete", cancelText: "Cancel");
+        if (confirmed == true)
+        {
+            await RunAsync("Deleting…", () => BackupService.DeleteAsync(backup.FileName));
+        }
+    }
+
+    private async Task RunAsync(string progress, Func<Task> action)
+    {
+        busy = true;
+        busyMessage = progress;
+        try
+        {
+            await action();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        finally
+        {
+            busy = false;
+            busyMessage = null;
+            await LoadAsync();
+        }
+    }
+
+    public void Dispose() => Server.StatusChanged -= OnStatusChanged;
+}

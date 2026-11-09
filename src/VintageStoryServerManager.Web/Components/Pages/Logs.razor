@@ -1,0 +1,136 @@
+@page "/logs"
+@attribute [Authorize(Roles = Roles.OperatorOrAdmin)]
+@implements IDisposable
+
+@using VintageStoryServerManager.Infrastructure.Logs
+
+@inject LogService LogService
+@inject ISnackbar Snackbar
+
+<PageTitle>Logs</PageTitle>
+
+<MudText Typo="Typo.h4" GutterBottom="true">Logs</MudText>
+
+<MudGrid>
+    <MudItem xs="12" md="3">
+        <MudPaper Elevation="1" Class="pa-2">
+            <div class="d-flex align-center px-2">
+                <MudText Typo="Typo.subtitle2">Files</MudText>
+                <MudSpacer />
+                <MudIconButton Icon="@Icons.Material.Filled.Refresh" Size="Size.Small" OnClick="LoadFiles" aria-label="Refresh list" title="Refresh list" />
+            </div>
+            @if (files.Count == 0)
+            {
+                <MudText Class="pa-2" Color="Color.Secondary">No logs yet. The server writes them once it has started.</MudText>
+            }
+            <MudNavMenu Dense="true">
+                @foreach (var file in files)
+                {
+                    <MudNavLink OnClick="() => SelectAsync(file.Name)" Class="@(file.Name == selected ? "mud-nav-link-active" : "")"
+                                Icon="@(file.IsCrashLog ? Icons.Material.Filled.ReportProblem : Icons.Material.Filled.Description)"
+                                IconColor="@(file.IsCrashLog ? Color.Error : Color.Default)">
+                        <span>@file.Name</span>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary" Class="d-block">
+                            @ServerDisplay.Size(file.SizeBytes) · @file.Modified.ToLocalTime().ToString("g")
+                        </MudText>
+                    </MudNavLink>
+                }
+            </MudNavMenu>
+        </MudPaper>
+    </MudItem>
+    <MudItem xs="12" md="9">
+        @if (selected is null)
+        {
+            <MudText Color="Color.Secondary">Choose a log file. Crash logs are listed first.</MudText>
+        }
+        else
+        {
+            <div class="d-flex align-center gap-2 mb-2 flex-wrap">
+                <MudText Typo="Typo.h6">@selected</MudText>
+                <MudSpacer />
+                <MudSelect T="int" Value="lineCount" ValueChanged="ChangeLineCountAsync" Dense="true" Margin="Margin.Dense" Style="max-width:9rem" Label="Lines">
+                    <MudSelectItem T="int" Value="200">Last 200</MudSelectItem>
+                    <MudSelectItem T="int" Value="1000">Last 1000</MudSelectItem>
+                    <MudSelectItem T="int" Value="5000">Last 5000</MudSelectItem>
+                </MudSelect>
+                <MudSwitch T="bool" Value="follow" ValueChanged="SetFollow" Color="Color.Primary" Label="Follow" />
+                <MudIconButton Icon="@Icons.Material.Filled.Refresh" OnClick="ReloadAsync" aria-label="Refresh" title="Refresh" />
+                <MudIconButton Icon="@Icons.Material.Filled.Download" Href="@($"api/logs/{Uri.EscapeDataString(selected)}")" aria-label="Download" title="Download" />
+            </div>
+            <div class="terminal">
+                @for (var i = lines.Count - 1; i >= 0; i--)
+                {
+                    var line = lines[i];
+                    <div class="@LineClass(line)">@line</div>
+                }
+            </div>
+        }
+    </MudItem>
+</MudGrid>
+
+@code {
+    private IReadOnlyList<LogFile> files = [];
+    private IReadOnlyList<string> lines = [];
+    private string? selected;
+    private int lineCount = 1000;
+    private bool follow;
+    private Timer? followTimer;
+
+    protected override async Task OnInitializedAsync()
+    {
+        LoadFiles();
+        var initial = files.FirstOrDefault(f => f.Name == "server-main.log") ?? files.FirstOrDefault();
+        if (initial is not null)
+        {
+            await SelectAsync(initial.Name);
+        }
+    }
+
+    private void LoadFiles() => files = LogService.List();
+
+    private async Task SelectAsync(string name)
+    {
+        selected = name;
+        await ReloadAsync();
+    }
+
+    private async Task ChangeLineCountAsync(int value)
+    {
+        lineCount = value;
+        await ReloadAsync();
+    }
+
+    private async Task ReloadAsync()
+    {
+        if (selected is null)
+        {
+            return;
+        }
+
+        try
+        {
+            lines = await LogService.TailAsync(selected, lineCount);
+        }
+        catch (Exception ex)
+        {
+            lines = [];
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+    }
+
+    private void SetFollow(bool value)
+    {
+        follow = value;
+        followTimer?.Dispose();
+        followTimer = follow
+            ? new Timer(_ => InvokeAsync(async () => { await ReloadAsync(); StateHasChanged(); }), null, TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(3))
+            : null;
+    }
+
+    private static string LineClass(string line) =>
+        line.Contains("[Server Error]", StringComparison.Ordinal) || line.Contains("[Server Fatal]", StringComparison.Ordinal) || line.Contains("Exception", StringComparison.Ordinal)
+            ? "line-error"
+            : line.Contains("[Server Warning]", StringComparison.Ordinal) ? "line-warning" : "";
+
+    public void Dispose() => followTimer?.Dispose();
+}

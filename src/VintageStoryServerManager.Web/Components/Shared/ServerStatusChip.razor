@@ -1,0 +1,28 @@
+@implements IDisposable
+@inject IGameServer Server
+
+<MudChip T="string" Size="Size.Small" Color="@Color" Variant="Variant.Filled" Icon="@Icons.Material.Filled.Circle">
+    @Label
+</MudChip>
+
+@code {
+    private ServerSnapshot snapshot = default!;
+
+    protected override void OnInitialized()
+    {
+        snapshot = Server.Snapshot;
+        Server.StatusChanged += OnStatusChanged;
+    }
+
+    private void OnStatusChanged(ServerSnapshot updated)
+    {
+        snapshot = updated;
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    private Color Color => ServerDisplay.StatusColor(snapshot.Status);
+
+    private string Label => ServerDisplay.StatusLabel(snapshot.Status);
+
+    public void Dispose() => Server.StatusChanged -= OnStatusChanged;
+}

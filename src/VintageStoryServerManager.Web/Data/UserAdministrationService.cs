@@ -4,7 +4,11 @@ using VintageStoryServerManager.Core.Security;
 
 namespace VintageStoryServerManager.Web.Data;
 
-public sealed record ManagedUser(string Id, string UserName, bool IsAdmin, bool IsLockedOut);
+/// <param name="Role">The user's manager role (<see cref="Roles.Admin"/> or <see cref="Roles.Operator"/>), or null for a viewer.</param>
+public sealed record ManagedUser(string Id, string UserName, string? Role, bool IsLockedOut)
+{
+    public bool IsAdmin => Role == Roles.Admin;
+}
 
 public sealed record UserAdminResult(bool Succeeded, string? Error = null)
 {
@@ -28,22 +32,28 @@ public sealed class UserAdministrationService(IServiceScopeFactory scopeFactory)
         var users = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
 
         var admins = (await users.GetUsersInRoleAsync(Roles.Admin)).Select(u => u.Id).ToHashSet();
+        var operators = (await users.GetUsersInRoleAsync(Roles.Operator)).Select(u => u.Id).ToHashSet();
         var all = await users.Users.OrderBy(u => u.UserName).ToListAsync();
 
         return all
             .Select(u => new ManagedUser(
                 u.Id,
                 u.UserName ?? "",
-                admins.Contains(u.Id),
+                admins.Contains(u.Id) ? Roles.Admin : operators.Contains(u.Id) ? Roles.Operator : null,
                 u.LockoutEnd is { } end && end > DateTimeOffset.UtcNow))
             .ToList();
     }
 
-    public async Task<UserAdminResult> CreateAsync(string userName, string password, bool isAdmin)
+    public async Task<UserAdminResult> CreateAsync(string userName, string password, string? role)
     {
         if (string.IsNullOrWhiteSpace(userName))
         {
             return UserAdminResult.Fail("Username is required.");
+        }
+
+        if (role is not null && !Roles.All.Contains(role))
+        {
+            return UserAdminResult.Fail($"Unknown role '{role}'.");
         }
 
         await using var scope = scopeFactory.CreateAsyncScope();
@@ -51,19 +61,25 @@ public sealed class UserAdministrationService(IServiceScopeFactory scopeFactory)
 
         var user = new ApplicationUser { UserName = userName.Trim() };
         var created = await users.CreateAsync(user, password);
-        if (!created.Succeeded || !isAdmin)
+        if (!created.Succeeded || role is null)
         {
             return UserAdminResult.From(created);
         }
 
-        return UserAdminResult.From(await users.AddToRoleAsync(user, Roles.Admin));
+        return UserAdminResult.From(await users.AddToRoleAsync(user, role));
     }
 
-    public async Task<UserAdminResult> SetAdminAsync(string userId, bool isAdmin, string actingUserId)
+    /// <summary>Sets the user's role; null makes them a viewer.</summary>
+    public async Task<UserAdminResult> SetRoleAsync(string userId, string? role, string actingUserId)
     {
         if (userId == actingUserId)
         {
-            return UserAdminResult.Fail("You can't change your own admin role.");
+            return UserAdminResult.Fail("You can't change your own role.");
+        }
+
+        if (role is not null && !Roles.All.Contains(role))
+        {
+            return UserAdminResult.Fail($"Unknown role '{role}'.");
         }
 
         await using var scope = scopeFactory.CreateAsyncScope();
@@ -75,16 +91,28 @@ public sealed class UserAdministrationService(IServiceScopeFactory scopeFactory)
             return UserAdminResult.Fail("User not found.");
         }
 
-        var result = isAdmin
-            ? await users.AddToRoleAsync(user, Roles.Admin)
-            : await users.RemoveFromRoleAsync(user, Roles.Admin);
-        if (result.Succeeded)
+        var current = (await users.GetRolesAsync(user)).Where(r => Roles.All.Contains(r)).ToList();
+        if (current.Count > 0)
         {
-            // Sign the user out of existing sessions so the role change takes effect.
-            await users.UpdateSecurityStampAsync(user);
+            var removed = await users.RemoveFromRolesAsync(user, current);
+            if (!removed.Succeeded)
+            {
+                return UserAdminResult.From(removed);
+            }
         }
 
-        return UserAdminResult.From(result);
+        if (role is not null)
+        {
+            var added = await users.AddToRoleAsync(user, role);
+            if (!added.Succeeded)
+            {
+                return UserAdminResult.From(added);
+            }
+        }
+
+        // Sign the user out of existing sessions so the change takes effect.
+        await users.UpdateSecurityStampAsync(user);
+        return UserAdminResult.Ok;
     }
 
     public async Task<UserAdminResult> ResetPasswordAsync(string userId, string newPassword)

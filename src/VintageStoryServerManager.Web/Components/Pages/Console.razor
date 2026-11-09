@@ -1,0 +1,171 @@
+@page "/console"
+@attribute [Authorize(Roles = Roles.OperatorOrAdmin)]
+@implements IDisposable
+
+@inject IGameServer Server
+@inject ISnackbar Snackbar
+
+<PageTitle>Console</PageTitle>
+
+<div class="d-flex align-center mb-3 gap-2 flex-wrap">
+    <MudText Typo="Typo.h4">Console</MudText>
+    <MudSpacer />
+    <MudButton Variant="Variant.Filled" Color="Color.Success" Size="Size.Small" StartIcon="@Icons.Material.Filled.PlayArrow"
+               Disabled="busy || snapshot.IsRunning || snapshot.Status == ServerStatus.Stopping" OnClick="() => RunAsync(() => Server.StartAsync())">Start</MudButton>
+    <MudButton Variant="Variant.Filled" Color="Color.Error" Size="Size.Small" StartIcon="@Icons.Material.Filled.Stop"
+               Disabled="busy || !snapshot.IsRunning" OnClick="() => RunAsync(() => Server.StopAsync())">Stop</MudButton>
+    <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.RestartAlt"
+               Disabled="busy || !snapshot.IsRunning" OnClick="() => RunAsync(() => Server.RestartAsync())">Restart</MudButton>
+</div>
+
+<div class="terminal" role="log" aria-live="polite">
+    @* Rendered newest-first: the column-reverse layout shows them oldest-first and keeps the view at the bottom. *@
+    @for (var i = lines.Count - 1; i >= 0; i--)
+    {
+        var line = lines[i];
+        @* Game output carries its own timestamp; the manager's own lines get one here. *@
+        <div class="@CssClass(line)">@(line.Kind is ConsoleLineKind.Output or ConsoleLineKind.Error ? "" : line.Time.ToLocalTime().ToString("HH:mm:ss ") )@line.Text</div>
+    }
+</div>
+
+<div class="d-flex gap-2 mt-3">
+    <MudTextField @bind-Value="command" Placeholder="@(snapshot.IsRunning ? "Command, e.g. /time set day" : "Start the server to send commands")"
+                  Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="!snapshot.IsRunning" Immediate="true"
+                  OnKeyDown="OnKeyDown" Class="flex-grow-1" autocomplete="off" />
+    <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="!snapshot.IsRunning || string.IsNullOrWhiteSpace(command)" OnClick="SendAsync">Send</MudButton>
+</div>
+<MudText Typo="Typo.caption" Color="Color.Secondary">Up and down arrows recall earlier commands. Commands run as the server console, with full privileges.</MudText>
+
+@code {
+    private const int MaxLines = 1500;
+
+    private readonly List<ConsoleLine> lines = [];
+    private readonly System.Collections.Concurrent.ConcurrentQueue<ConsoleLine> pending = new();
+    private readonly List<string> sent = [];
+    private ServerSnapshot snapshot = default!;
+    private string command = "";
+    private int historyIndex = -1;
+    private bool busy;
+    private int renderScheduled;
+
+    protected override void OnInitialized()
+    {
+        snapshot = Server.Snapshot;
+        lines.AddRange(Server.ConsoleHistory().TakeLast(MaxLines));
+        Server.ConsoleOutput += OnOutput;
+        Server.StatusChanged += OnStatusChanged;
+    }
+
+    // Output arrives on the server's reader threads; `lines` is only touched on the renderer's context.
+    private void OnOutput(ConsoleLine line)
+    {
+        pending.Enqueue(line);
+        if (Interlocked.Exchange(ref renderScheduled, 1) == 1)
+        {
+            return;
+        }
+
+        // Batch bursts of output into one render.
+        _ = InvokeAsync(async () =>
+        {
+            await Task.Delay(100);
+            Volatile.Write(ref renderScheduled, 0);
+            while (pending.TryDequeue(out var next))
+            {
+                lines.Add(next);
+            }
+
+            if (lines.Count > MaxLines)
+            {
+                lines.RemoveRange(0, lines.Count - MaxLines);
+            }
+
+            StateHasChanged();
+        });
+    }
+
+    private void OnStatusChanged(ServerSnapshot updated)
+    {
+        snapshot = updated;
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    private async Task SendAsync()
+    {
+        var text = command.Trim();
+        if (text.Length == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            await Server.SendCommandAsync(text);
+            sent.Add(text);
+            historyIndex = -1;
+            command = "";
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+    }
+
+    private async Task OnKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            await SendAsync();
+            return;
+        }
+
+        if (sent.Count == 0 || e.Key is not ("ArrowUp" or "ArrowDown"))
+        {
+            return;
+        }
+
+        historyIndex = e.Key == "ArrowUp"
+            ? (historyIndex < 0 ? sent.Count - 1 : Math.Max(0, historyIndex - 1))
+            : (historyIndex < 0 ? -1 : historyIndex + 1);
+
+        if (historyIndex >= sent.Count)
+        {
+            historyIndex = -1;
+        }
+
+        command = historyIndex < 0 ? "" : sent[historyIndex];
+    }
+
+    private async Task RunAsync(Func<Task> action)
+    {
+        busy = true;
+        try
+        {
+            await action();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    private static string CssClass(ConsoleLine line) => line.Kind switch
+    {
+        ConsoleLineKind.Error => "line-error",
+        ConsoleLineKind.Input => "line-input",
+        ConsoleLineKind.Manager => "line-manager",
+        _ when line.Text.Contains("[Server Error]", StringComparison.Ordinal) || line.Text.Contains("[Server Fatal]", StringComparison.Ordinal) => "line-error",
+        _ when line.Text.Contains("[Server Warning]", StringComparison.Ordinal) => "line-warning",
+        _ => "",
+    };
+
+    public void Dispose()
+    {
+        Server.ConsoleOutput -= OnOutput;
+        Server.StatusChanged -= OnStatusChanged;
+    }
+}

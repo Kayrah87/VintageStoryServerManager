@@ -1,0 +1,135 @@
+@page "/config"
+@attribute [Authorize(Roles = Roles.Admin)]
+@implements IDisposable
+
+@using VintageStoryServerManager.Infrastructure.Config
+
+@inject ServerConfigService Config
+@inject IGameServer Server
+@inject ISnackbar Snackbar
+
+<PageTitle>Server config</PageTitle>
+
+<div class="d-flex align-center mb-2 gap-2 flex-wrap">
+    <MudText Typo="Typo.h4">Server config</MudText>
+    <MudSpacer />
+    <MudButton Variant="Variant.Text" StartIcon="@Icons.Material.Filled.Refresh" Disabled="busy" OnClick="LoadAsync">Reload</MudButton>
+    <MudButton Variant="Variant.Outlined" Disabled="busy" OnClick="Validate">Check</MudButton>
+    <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Save"
+               Disabled="busy || !canSave || !dirty" OnClick="SaveAsync">Save</MudButton>
+</div>
+
+<MudText Class="mb-3" Color="Color.Secondary">
+    <code>serverconfig.json</code>: server name, password, port, whitelist mode, roles, world settings and more.
+    The previous version is backed up automatically when you save.
+</MudText>
+
+@if (!canSave)
+{
+    <MudAlert Severity="Severity.Info" Class="mb-3">
+        Stop the server to edit the config. The server rewrites this file when it shuts down, which would undo your changes.
+    </MudAlert>
+}
+
+@if (validationError is not null)
+{
+    <MudAlert Severity="Severity.Error" Class="mb-3">@validationError</MudAlert>
+}
+
+@if (text is null)
+{
+    <MudAlert Severity="Severity.Info">There's no serverconfig.json yet. The server creates one the first time it starts.</MudAlert>
+}
+else
+{
+    <MudTextField T="string" Value="text" ValueChanged="OnChanged" Lines="32" Variant="Variant.Outlined" Class="code-editor"
+                  ReadOnly="!canSave" Immediate="false" spellcheck="false" aria-label="serverconfig.json" />
+}
+
+@code {
+    private string? text;
+    private string? validationError;
+    private bool dirty;
+    private bool busy;
+    private ServerSnapshot snapshot = default!;
+
+    private bool canSave => !snapshot.IsRunning && snapshot.Status != ServerStatus.Stopping;
+
+    protected override async Task OnInitializedAsync()
+    {
+        snapshot = Server.Snapshot;
+        Server.StatusChanged += OnStatusChanged;
+        await LoadAsync();
+    }
+
+    private void OnStatusChanged(ServerSnapshot updated)
+    {
+        var stoppedNow = !updated.IsRunning && updated.Status != ServerStatus.Stopping && !canSave;
+        snapshot = updated;
+        _ = InvokeAsync(async () =>
+        {
+            // Pick up what the server wrote on shutdown, unless there are unsaved edits.
+            if (stoppedNow && !dirty)
+            {
+                await LoadAsync();
+            }
+
+            StateHasChanged();
+        });
+    }
+
+    private async Task LoadAsync()
+    {
+        text = await Config.ReadAsync();
+        dirty = false;
+        validationError = null;
+    }
+
+    private void OnChanged(string value)
+    {
+        text = value;
+        dirty = true;
+        validationError = null;
+    }
+
+    private void Validate()
+    {
+        validationError = text is null ? null : ServerConfigService.Validate(text);
+        if (validationError is null)
+        {
+            Snackbar.Add("The config is valid JSON.", Severity.Success);
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        if (text is null)
+        {
+            return;
+        }
+
+        validationError = ServerConfigService.Validate(text);
+        if (validationError is not null)
+        {
+            return;
+        }
+
+        busy = true;
+        try
+        {
+            await Config.SaveAsync(text);
+            dirty = false;
+            Snackbar.Add("Saved. The changes apply when the server next starts.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    public void Dispose() => Server.StatusChanged -= OnStatusChanged;
+}

@@ -1,123 +1,119 @@
 @page "/admin/users"
 @attribute [Authorize(Roles = Roles.Admin)]
-@rendermode InteractiveServer
 
-@using System.ComponentModel.DataAnnotations
 @using System.Security.Claims
 @using VintageStoryServerManager.Web.Data
 
 @inject UserAdministrationService UserAdmin
+@inject ISnackbar Snackbar
+@inject IDialogService Dialogs
 
 <PageTitle>Users</PageTitle>
 
-<h1>Users</h1>
+<MudText Typo="Typo.h4" GutterBottom="true">Users</MudText>
+<MudText Class="mb-4" Color="Color.Secondary">
+    Viewers can see the dashboard and mods. Operators can also start and stop the server, use the console and manage players.
+    Admins can do everything.
+</MudText>
 
-@if (message is not null)
-{
-    <div class="alert @(messageIsError ? "alert-danger" : "alert-success")" role="alert">@message</div>
-}
-
-<section class="mb-5">
-    <h2 class="h4">Add user</h2>
-    <EditForm Model="newUser" OnValidSubmit="CreateUserAsync" FormName="create-user">
-        <DataAnnotationsValidator />
-        <div class="row g-2 align-items-end">
-            <div class="col-sm-4">
-                <label for="new-username" class="form-label">Username</label>
-                <InputText id="new-username" @bind-Value="newUser.UserName" class="form-control" autocomplete="off" />
-                <ValidationMessage For="() => newUser.UserName" class="text-danger" />
-            </div>
-            <div class="col-sm-4">
-                <label for="new-password" class="form-label">Password</label>
-                <InputText id="new-password" type="password" @bind-Value="newUser.Password" class="form-control" autocomplete="new-password" />
-                <ValidationMessage For="() => newUser.Password" class="text-danger" />
-            </div>
-            <div class="col-sm-2">
-                <div class="form-check mb-2">
-                    <InputCheckbox id="new-admin" @bind-Value="newUser.IsAdmin" class="form-check-input" />
-                    <label for="new-admin" class="form-check-label">Admin</label>
-                </div>
-            </div>
-            <div class="col-sm-2">
-                <button type="submit" class="btn btn-primary w-100" disabled="@busy">Add</button>
-            </div>
-        </div>
-    </EditForm>
-</section>
-
-<section>
-    <h2 class="h4">Accounts</h2>
-    @if (users is null)
-    {
-        <p>Loading…</p>
-    }
-    else
-    {
-        <table class="table align-middle">
-            <thead>
-                <tr>
-                    <th>Username</th>
-                    <th>Role</th>
-                    <th>Status</th>
-                    <th class="text-end">Actions</th>
-                </tr>
-            </thead>
-            <tbody>
-                @foreach (var user in users)
+<MudPaper Class="pa-4 mb-6" Elevation="1">
+    <MudText Typo="Typo.h6" GutterBottom="true">Add user</MudText>
+    <MudGrid Spacing="2">
+        <MudItem xs="12" sm="4">
+            <MudTextField @bind-Value="newUserName" Label="Username" Variant="Variant.Outlined" Margin="Margin.Dense" autocomplete="off" />
+        </MudItem>
+        <MudItem xs="12" sm="4">
+            <MudTextField @bind-Value="newPassword" Label="Password" InputType="InputType.Password" Variant="Variant.Outlined" Margin="Margin.Dense"
+                          autocomplete="new-password" HelperText="At least 6 characters with upper and lower case, a digit and a symbol." />
+        </MudItem>
+        <MudItem xs="12" sm="2">
+            <MudSelect T="string" @bind-Value="newRole" Label="Role" Variant="Variant.Outlined" Margin="Margin.Dense">
+                @foreach (var option in RoleOptions)
                 {
-                    var isSelf = user.Id == currentUserId;
-                    <tr @key="user.Id">
-                        <td>@user.UserName @(isSelf ? "(you)" : "")</td>
-                        <td>@(user.IsAdmin ? "Admin" : "User")</td>
-                        <td>@(user.IsLockedOut ? "Locked out" : "Active")</td>
-                        <td class="text-end">
-                            @if (resetUserId == user.Id)
-                            {
-                                <div class="d-inline-flex gap-2">
-                                    <input type="password" class="form-control form-control-sm" placeholder="New password"
-                                           autocomplete="new-password" @bind="resetPassword" />
-                                    <button class="btn btn-sm btn-primary" disabled="@busy" @onclick="() => ResetPasswordAsync(user)">Save</button>
-                                    <button class="btn btn-sm btn-secondary" @onclick="CancelReset">Cancel</button>
-                                </div>
-                            }
-                            else
-                            {
-                                <button class="btn btn-sm btn-outline-secondary" disabled="@busy" @onclick="() => StartReset(user)">Set password</button>
-                                @if (!isSelf)
-                                {
-                                    <button class="btn btn-sm btn-outline-secondary" disabled="@busy" @onclick="() => ToggleAdminAsync(user)">
-                                        @(user.IsAdmin ? "Remove admin" : "Make admin")
-                                    </button>
-                                    @if (confirmDeleteId == user.Id)
-                                    {
-                                        <button class="btn btn-sm btn-danger" disabled="@busy" @onclick="() => DeleteAsync(user)">Confirm delete</button>
-                                        <button class="btn btn-sm btn-secondary" @onclick="() => confirmDeleteId = null">Cancel</button>
-                                    }
-                                    else
-                                    {
-                                        <button class="btn btn-sm btn-outline-danger" disabled="@busy" @onclick="() => confirmDeleteId = user.Id">Delete</button>
-                                    }
-                                }
-                            }
-                        </td>
-                    </tr>
+                    <MudSelectItem T="string" Value="@option.Value">@option.Label</MudSelectItem>
                 }
-            </tbody>
-        </table>
-    }
-</section>
+            </MudSelect>
+        </MudItem>
+        <MudItem xs="12" sm="2" Class="d-flex align-center">
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" FullWidth="true" Disabled="busy" OnClick="CreateUserAsync">Add</MudButton>
+        </MudItem>
+    </MudGrid>
+</MudPaper>
+
+<MudTable Items="users" Loading="users is null" Hover="true" Dense="true" Elevation="1">
+    <HeaderContent>
+        <MudTh>Username</MudTh>
+        <MudTh>Role</MudTh>
+        <MudTh>Status</MudTh>
+        <MudTh Style="text-align:right">Actions</MudTh>
+    </HeaderContent>
+    <RowTemplate>
+        @{ var isSelf = context.Id == currentUserId; }
+        <MudTd DataLabel="Username">@context.UserName @(isSelf ? "(you)" : "")</MudTd>
+        <MudTd DataLabel="Role">
+            @if (isSelf)
+            {
+                @RoleLabel(context.Role)
+            }
+            else
+            {
+                <MudSelect T="string" Value="@(context.Role ?? ViewerValue)" ValueChanged="@(role => SetRoleAsync(context, role))"
+                           Dense="true" Margin="Margin.Dense" Disabled="busy" Style="max-width:12rem">
+                    @foreach (var option in RoleOptions)
+                    {
+                        <MudSelectItem T="string" Value="@option.Value">@option.Label</MudSelectItem>
+                    }
+                </MudSelect>
+            }
+        </MudTd>
+        <MudTd DataLabel="Status">
+            @if (context.IsLockedOut)
+            {
+                <MudChip T="string" Size="Size.Small" Color="Color.Warning">Locked out</MudChip>
+            }
+            else
+            {
+                <MudChip T="string" Size="Size.Small">Active</MudChip>
+            }
+        </MudTd>
+        <MudTd Style="text-align:right">
+            @if (resetUserId == context.Id)
+            {
+                <div class="d-inline-flex gap-2 align-center">
+                    <MudTextField @bind-Value="resetPassword" Placeholder="New password" InputType="InputType.Password" Margin="Margin.Dense"
+                                  Variant="Variant.Outlined" autocomplete="new-password" />
+                    <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Primary" Disabled="busy" OnClick="() => ResetPasswordAsync(context)">Save</MudButton>
+                    <MudButton Size="Size.Small" OnClick="CancelReset">Cancel</MudButton>
+                </div>
+            }
+            else
+            {
+                <MudButton Size="Size.Small" Variant="Variant.Outlined" Disabled="busy" OnClick="() => StartReset(context)">Set password</MudButton>
+                @if (!isSelf)
+                {
+                    <MudIconButton Icon="@Icons.Material.Filled.Delete" Color="Color.Error" Size="Size.Small" Disabled="busy"
+                                   OnClick="() => DeleteAsync(context)" aria-label="Delete user" title="Delete user" />
+                }
+            }
+        </MudTd>
+    </RowTemplate>
+</MudTable>
 
 @code {
+    private const string ViewerValue = "";
+
+    private static readonly (string Value, string Label)[] RoleOptions =
+        [(ViewerValue, "Viewer"), (Roles.Operator, "Operator"), (Roles.Admin, "Admin")];
+
     [CascadingParameter]
     private Task<AuthenticationState> AuthenticationState { get; set; } = default!;
 
     private IReadOnlyList<ManagedUser>? users;
     private string currentUserId = "";
-    private NewUserModel newUser = new();
-    private string? message;
-    private bool messageIsError;
+    private string newUserName = "";
+    private string newPassword = "";
+    private string newRole = ViewerValue;
     private bool busy;
-    private string? confirmDeleteId;
     private string? resetUserId;
     private string resetPassword = "";
 
@@ -128,23 +124,24 @@
         await LoadAsync();
     }
 
+    private static string RoleLabel(string? role) => RoleOptions.First(o => o.Value == (role ?? ViewerValue)).Label;
+
+    private static string? ToRole(string value) => value == ViewerValue ? null : value;
+
     private async Task LoadAsync() => users = await UserAdmin.ListAsync();
 
     private async Task CreateUserAsync()
     {
-        await RunAsync(
-            () => UserAdmin.CreateAsync(newUser.UserName, newUser.Password, newUser.IsAdmin),
-            $"Added user '{newUser.UserName}'.");
-        if (!messageIsError)
+        var name = newUserName;
+        if (await RunAsync(() => UserAdmin.CreateAsync(name, newPassword, ToRole(newRole)), $"Added user '{name}'."))
         {
-            newUser = new();
+            newUserName = newPassword = "";
+            newRole = ViewerValue;
         }
     }
 
-    private Task ToggleAdminAsync(ManagedUser user) =>
-        RunAsync(
-            () => UserAdmin.SetAdminAsync(user.Id, !user.IsAdmin, currentUserId),
-            user.IsAdmin ? $"'{user.UserName}' is no longer an admin." : $"'{user.UserName}' is now an admin.");
+    private Task SetRoleAsync(ManagedUser user, string role) =>
+        RunAsync(() => UserAdmin.SetRoleAsync(user.Id, ToRole(role), currentUserId), $"'{user.UserName}' is now {RoleLabel(ToRole(role)).ToLowerInvariant()}.");
 
     private void StartReset(ManagedUser user)
     {
@@ -160,8 +157,7 @@
 
     private async Task ResetPasswordAsync(ManagedUser user)
     {
-        await RunAsync(() => UserAdmin.ResetPasswordAsync(user.Id, resetPassword), $"Password updated for '{user.UserName}'.");
-        if (!messageIsError)
+        if (await RunAsync(() => UserAdmin.ResetPasswordAsync(user.Id, resetPassword), $"Password updated for '{user.UserName}'."))
         {
             CancelReset();
         }
@@ -169,34 +165,26 @@
 
     private async Task DeleteAsync(ManagedUser user)
     {
-        confirmDeleteId = null;
-        await RunAsync(() => UserAdmin.DeleteAsync(user.Id, currentUserId), $"Deleted user '{user.UserName}'.");
+        var confirmed = await Dialogs.ShowMessageBoxAsync("Delete user", $"Delete '{user.UserName}'? This can't be undone.", yesText: "Delete", cancelText: "Cancel");
+        if (confirmed == true)
+        {
+            await RunAsync(() => UserAdmin.DeleteAsync(user.Id, currentUserId), $"Deleted user '{user.UserName}'.");
+        }
     }
 
-    private async Task RunAsync(Func<Task<UserAdminResult>> action, string successMessage)
+    private async Task<bool> RunAsync(Func<Task<UserAdminResult>> action, string successMessage)
     {
         busy = true;
         try
         {
             var result = await action();
-            messageIsError = !result.Succeeded;
-            message = result.Succeeded ? successMessage : result.Error;
+            Snackbar.Add(result.Succeeded ? successMessage : result.Error!, result.Succeeded ? Severity.Success : Severity.Error);
             await LoadAsync();
+            return result.Succeeded;
         }
         finally
         {
             busy = false;
         }
-    }
-
-    private sealed class NewUserModel
-    {
-        [Required]
-        public string UserName { get; set; } = "";
-
-        [Required]
-        public string Password { get; set; } = "";
-
-        public bool IsAdmin { get; set; }
     }
 }

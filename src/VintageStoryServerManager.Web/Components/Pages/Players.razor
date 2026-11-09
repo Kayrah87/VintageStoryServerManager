@@ -1,0 +1,245 @@
+@page "/players"
+@attribute [Authorize(Roles = Roles.OperatorOrAdmin)]
+@implements IDisposable
+
+@using VintageStoryServerManager.Core.Players
+@using VintageStoryServerManager.Infrastructure.Players
+
+@inject PlayerService PlayerActions
+@inject IGameServer Server
+@inject ISnackbar Snackbar
+
+<PageTitle>Players</PageTitle>
+
+<MudText Typo="Typo.h4" GutterBottom="true">Players</MudText>
+
+@if (!snapshot.IsRunning)
+{
+    <MudAlert Severity="Severity.Info" Class="mb-4">
+        Start the server to change players: kicks, bans, the whitelist and roles go through the server console. The lists below are read from its Playerdata files.
+    </MudAlert>
+}
+
+@if (lists.WhitelistMode is { } mode)
+{
+    <MudText Class="mb-4" Color="Color.Secondary">
+        Whitelist mode: <strong>@WhitelistModeLabel(mode)</strong>. Change it in Server config (<code>WhitelistMode</code>) or with <code>/serverconfig whitelistmode</code>.
+    </MudText>
+}
+
+@if (banTarget is not null)
+{
+    <MudPaper Class="pa-4 mb-4" Elevation="3" Outlined="true">
+        <MudText Typo="Typo.h6" GutterBottom="true">Ban @banTarget</MudText>
+        <MudGrid Spacing="2">
+            <MudItem xs="6" sm="2">
+                <MudNumericField T="int" @bind-Value="banAmount" Label="For" Min="1" Variant="Variant.Outlined" Margin="Margin.Dense" />
+            </MudItem>
+            <MudItem xs="6" sm="2">
+                <MudSelect T="BanUnit" @bind-Value="banUnit" Label="Unit" Variant="Variant.Outlined" Margin="Margin.Dense">
+                    <MudSelectItem T="BanUnit" Value="BanUnit.Hour">hours</MudSelectItem>
+                    <MudSelectItem T="BanUnit" Value="BanUnit.Day">days</MudSelectItem>
+                    <MudSelectItem T="BanUnit" Value="BanUnit.Week">weeks</MudSelectItem>
+                    <MudSelectItem T="BanUnit" Value="BanUnit.Year">years</MudSelectItem>
+                </MudSelect>
+            </MudItem>
+            <MudItem xs="12" sm="5">
+                <MudTextField @bind-Value="banReason" Label="Reason" Variant="Variant.Outlined" Margin="Margin.Dense" MaxLength="200" />
+            </MudItem>
+            <MudItem xs="12" sm="3" Class="d-flex align-center gap-2">
+                <MudButton Variant="Variant.Filled" Color="Color.Error" Disabled="busy || !snapshot.IsRunning" OnClick="BanAsync">Ban</MudButton>
+                <MudButton Variant="Variant.Text" OnClick="() => banTarget = null">Cancel</MudButton>
+            </MudItem>
+        </MudGrid>
+    </MudPaper>
+}
+
+<MudGrid>
+    <MudItem xs="12" md="6">
+        <MudPaper Class="pa-4" Elevation="1">
+            <MudText Typo="Typo.h6" GutterBottom="true">Online now</MudText>
+            @if (snapshot.OnlinePlayers.Count == 0)
+            {
+                <MudText Color="Color.Secondary">Nobody is online.</MudText>
+            }
+            @foreach (var player in snapshot.OnlinePlayers)
+            {
+                <div class="d-flex align-center gap-2 py-1">
+                    <MudIcon Icon="@Icons.Material.Filled.Person" Size="Size.Small" />
+                    <MudText>@player</MudText>
+                    <MudSpacer />
+                    <MudButton Size="Size.Small" Variant="Variant.Outlined" Disabled="busy" OnClick='@(() => RunAsync(() => PlayerActions.KickAsync(player, null), $"Kicked {player}."))'>Kick</MudButton>
+                    <MudButton Size="Size.Small" Variant="Variant.Outlined" Color="Color.Error" Disabled="busy" OnClick="() => StartBan(player)">Ban</MudButton>
+                </div>
+            }
+        </MudPaper>
+    </MudItem>
+
+    <MudItem xs="12" md="6">
+        <MudPaper Class="pa-4" Elevation="1">
+            <MudText Typo="Typo.h6" GutterBottom="true">Whitelist</MudText>
+            <div class="d-flex gap-2 mb-2">
+                <MudTextField @bind-Value="whitelistName" Placeholder="Player name" Variant="Variant.Outlined" Margin="Margin.Dense" Class="flex-grow-1"
+                              Immediate="true" OnKeyDown="@(e => e.Key == "Enter" ? AddToWhitelistAsync() : Task.CompletedTask)" autocomplete="off" />
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="busy || !snapshot.IsRunning || string.IsNullOrWhiteSpace(whitelistName)"
+                           OnClick="AddToWhitelistAsync">Add</MudButton>
+            </div>
+            @if (lists.Whitelisted.Count == 0)
+            {
+                <MudText Color="Color.Secondary">Nobody is whitelisted.</MudText>
+            }
+            @foreach (var entry in lists.Whitelisted)
+            {
+                <div class="d-flex align-center gap-2 py-1">
+                    <MudText>@entry.Name</MudText>
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">@Until(entry)</MudText>
+                    <MudSpacer />
+                    <MudButton Size="Size.Small" Variant="Variant.Text" Disabled="busy || !snapshot.IsRunning"
+                               OnClick='@(() => RunAsync(() => PlayerActions.SetWhitelistedAsync(entry.Name, false), $"Removed {entry.Name} from the whitelist."))'>Remove</MudButton>
+                </div>
+            }
+        </MudPaper>
+    </MudItem>
+
+    <MudItem xs="12" md="6">
+        <MudPaper Class="pa-4" Elevation="1">
+            <MudText Typo="Typo.h6" GutterBottom="true">Banned</MudText>
+            @if (lists.Banned.Count == 0)
+            {
+                <MudText Color="Color.Secondary">Nobody is banned.</MudText>
+            }
+            @foreach (var entry in lists.Banned)
+            {
+                <div class="d-flex align-center gap-2 py-1">
+                    <div>
+                        <MudText>@entry.Name</MudText>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">@Until(entry)@(entry.Reason is { Length: > 0 } reason ? $" · {reason}" : "")</MudText>
+                    </div>
+                    <MudSpacer />
+                    <MudButton Size="Size.Small" Variant="Variant.Text" Disabled="busy || !snapshot.IsRunning"
+                               OnClick='@(() => RunAsync(() => PlayerActions.UnbanAsync(entry.Name), $"Unbanned {entry.Name}."))'>Unban</MudButton>
+                </div>
+            }
+        </MudPaper>
+    </MudItem>
+
+    <MudItem xs="12" md="6">
+        <MudPaper Class="pa-4" Elevation="1">
+            <MudText Typo="Typo.h6" GutterBottom="true">Known players</MudText>
+            @if (lists.Known.Count == 0)
+            {
+                <MudText Color="Color.Secondary">No player has joined yet.</MudText>
+            }
+            @foreach (var player in lists.Known)
+            {
+                <div class="d-flex align-center gap-2 py-1">
+                    <MudText>@player.Name</MudText>
+                    <MudSpacer />
+                    @if (lists.Roles.Count > 0)
+                    {
+                        <MudSelect T="string" Value="@(player.Role ?? lists.DefaultRole ?? "")" ValueChanged="@(role => SetRoleAsync(player, role))"
+                                   Dense="true" Margin="Margin.Dense" Disabled="busy || !snapshot.IsRunning" Style="max-width:10rem">
+                            @foreach (var role in lists.Roles)
+                            {
+                                <MudSelectItem T="string" Value="@role">@role</MudSelectItem>
+                            }
+                        </MudSelect>
+                    }
+                    else
+                    {
+                        <MudText Typo="Typo.caption">@player.Role</MudText>
+                    }
+                    <MudButton Size="Size.Small" Variant="Variant.Text" Color="Color.Error" Disabled="busy" OnClick="() => StartBan(player.Name)">Ban</MudButton>
+                </div>
+            }
+        </MudPaper>
+    </MudItem>
+</MudGrid>
+
+@code {
+    private PlayerLists lists = new([], [], [], [], null, null);
+    private ServerSnapshot snapshot = default!;
+    private string whitelistName = "";
+    private string? banTarget;
+    private int banAmount = 1;
+    private BanUnit banUnit = BanUnit.Week;
+    private string banReason = "";
+    private bool busy;
+
+    protected override void OnInitialized()
+    {
+        snapshot = Server.Snapshot;
+        Server.StatusChanged += OnStatusChanged;
+        lists = PlayerActions.Read();
+    }
+
+    private void OnStatusChanged(ServerSnapshot updated)
+    {
+        snapshot = updated;
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    private void StartBan(string player)
+    {
+        banTarget = player;
+        banReason = "";
+    }
+
+    private async Task BanAsync()
+    {
+        var target = banTarget!;
+        await RunAsync(() => PlayerActions.BanAsync(target, banAmount, banUnit, banReason), $"Banned {target}.");
+        banTarget = null;
+    }
+
+    private async Task AddToWhitelistAsync()
+    {
+        var name = whitelistName.Trim();
+        if (name.Length == 0 || busy || !snapshot.IsRunning)
+        {
+            return;
+        }
+
+        await RunAsync(() => PlayerActions.SetWhitelistedAsync(name, true), $"Whitelisted {name}.");
+        whitelistName = "";
+    }
+
+    private Task SetRoleAsync(PlayerRecord player, string role) =>
+        RunAsync(() => PlayerActions.SetRoleAsync(player.Name, role), $"{player.Name} now has role {role}.");
+
+    private async Task RunAsync(Func<Task> action, string message)
+    {
+        busy = true;
+        try
+        {
+            await action();
+            Snackbar.Add($"{message} Check the console for the server's reply.", Severity.Success);
+            // The server writes its Playerdata files right after handling the command.
+            await Task.Delay(750);
+            lists = PlayerActions.Read();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    private static string Until(PlayerRecord entry) =>
+        DateTimeOffset.TryParse(entry.Until, out var until)
+            ? until.Year > DateTimeOffset.UtcNow.Year + 20 ? "permanent" : $"until {until.ToLocalTime():g}"
+            : "";
+
+    public void Dispose() => Server.StatusChanged -= OnStatusChanged;
+
+    private static string WhitelistModeLabel(int mode) => mode switch
+    {
+        0 => "Default (on unless the server is advertised)",
+        1 => "On: only whitelisted players can join",
+        2 => "Off: anyone can join",
+        _ => mode.ToString(),
+    };
+}

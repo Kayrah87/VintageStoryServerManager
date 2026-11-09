@@ -1,0 +1,215 @@
+@page "/game-versions"
+@attribute [Authorize(Roles = Roles.Admin)]
+@implements IDisposable
+
+@using VintageStoryServerManager.Core.Backups
+@using VintageStoryServerManager.Core.Game
+@using VintageStoryServerManager.Core.Versioning
+
+@inject IGameInstallation Installation
+@inject IBackupService Backups
+@inject IGameServer Server
+@inject ISnackbar Snackbar
+@inject IDialogService Dialogs
+
+<PageTitle>Game versions</PageTitle>
+
+<MudText Typo="Typo.h4" GutterBottom="true">Game versions</MudText>
+<MudText Class="mb-4" Color="Color.Secondary">
+    Download other Vintage Story server versions into the data volume and switch between them without rebuilding the image.
+    Switching makes a full backup first. Worlds opened in a newer version may not load in an older one.
+</MudText>
+
+@if (snapshot.IsRunning || snapshot.Status == ServerStatus.Stopping)
+{
+    <MudAlert Severity="Severity.Info" Dense="true" Class="mb-3">Stop the server to switch versions. Downloads can run while it's up.</MudAlert>
+}
+
+@if (progress is not null)
+{
+    <MudProgressLinear Color="Color.Primary" Indeterminate="true" Class="mb-1" />
+    <MudText Typo="Typo.body2" Class="mb-3">@progress</MudText>
+}
+
+<MudText Typo="Typo.h6" Class="mb-2">Installed</MudText>
+<MudTable Items="installed" Dense="true" Hover="true" Elevation="1" Class="mb-6" Breakpoint="Breakpoint.Sm">
+    <HeaderContent>
+        <MudTh>Version</MudTh>
+        <MudTh>Source</MudTh>
+        <MudTh>Location</MudTh>
+        <MudTh Style="text-align:right">Actions</MudTh>
+    </HeaderContent>
+    <RowTemplate>
+        <MudTd DataLabel="Version">
+            @context.Version
+            @if (context.IsActive)
+            {
+                <MudChip T="string" Size="Size.Small" Color="Color.Success" Class="ml-1">Active</MudChip>
+            }
+        </MudTd>
+        <MudTd DataLabel="Source">@(context.IsBundled ? "Bundled with the image" : "Downloaded")</MudTd>
+        <MudTd DataLabel="Location"><code>@context.Directory</code></MudTd>
+        <MudTd Style="text-align:right; white-space:nowrap">
+            @if (!context.IsActive)
+            {
+                <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Primary" Disabled="busy || !CanSwitch"
+                           OnClick="() => ActivateAsync(context)">Use this version</MudButton>
+                @if (!context.IsBundled)
+                {
+                    <MudIconButton Icon="@Icons.Material.Filled.Delete" Color="Color.Error" Size="Size.Small" Disabled="busy"
+                                   OnClick="() => RemoveAsync(context)" aria-label="Remove" title="Remove" />
+                }
+            }
+        </MudTd>
+    </RowTemplate>
+    <NoRecordsContent>
+        <MudText>No server installation found.</MudText>
+    </NoRecordsContent>
+</MudTable>
+
+<div class="d-flex align-center mb-2">
+    <MudText Typo="Typo.h6">Available</MudText>
+    <MudSpacer />
+    <MudSwitch T="bool" @bind-Value="showUnstable" Color="Color.Primary" Label="Show unstable" />
+</div>
+<MudTable Items="VisibleReleases" Loading="available is null" Dense="true" Hover="true" Elevation="1" Breakpoint="Breakpoint.Sm" RowsPerPage="15">
+    <HeaderContent>
+        <MudTh>Version</MudTh>
+        <MudTh>Channel</MudTh>
+        <MudTh Style="text-align:right" />
+    </HeaderContent>
+    <RowTemplate>
+        <MudTd DataLabel="Version">
+            @context.Version
+            @if (context.Latest)
+            {
+                <MudChip T="string" Size="Size.Small" Color="Color.Info" Class="ml-1">Latest</MudChip>
+            }
+        </MudTd>
+        <MudTd DataLabel="Channel">@context.Channel</MudTd>
+        <MudTd Style="text-align:right">
+            @if (installed.Any(i => i.Version == context.Version))
+            {
+                <MudChip T="string" Size="Size.Small" Color="Color.Success">Installed</MudChip>
+            }
+            else
+            {
+                <MudButton Size="Size.Small" Variant="Variant.Outlined" Disabled="busy" OnClick="() => InstallAsync(context)">Download</MudButton>
+            }
+        </MudTd>
+    </RowTemplate>
+    <PagerContent>
+        <MudTablePager />
+    </PagerContent>
+    <NoRecordsContent>
+        <MudText>Couldn't load the version list from api.vintagestory.at.</MudText>
+    </NoRecordsContent>
+</MudTable>
+
+@code {
+    private IReadOnlyList<GameInstall> installed = [];
+    private IReadOnlyList<GameRelease>? available;
+    private ServerSnapshot snapshot = default!;
+    private bool showUnstable;
+    private bool busy;
+    private string? progress;
+
+    private bool CanSwitch => !snapshot.IsRunning && snapshot.Status != ServerStatus.Stopping;
+
+    private IEnumerable<GameRelease> VisibleReleases =>
+        (available ?? []).Where(r => showUnstable || r.Channel == "stable");
+
+    protected override async Task OnInitializedAsync()
+    {
+        snapshot = Server.Snapshot;
+        Server.StatusChanged += OnStatusChanged;
+        installed = Installation.ListInstalled();
+        available = await Installation.GetAvailableAsync();
+    }
+
+    private void OnStatusChanged(ServerSnapshot updated)
+    {
+        snapshot = updated;
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    private async Task InstallAsync(GameRelease release)
+    {
+        busy = true;
+        try
+        {
+            var reporter = new Progress<string>(message => InvokeAsync(() => { progress = message; StateHasChanged(); }));
+            await Installation.InstallAsync(release, reporter);
+            Snackbar.Add($"Downloaded {release.Version}. Choose \"Use this version\" to switch to it.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Download failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            busy = false;
+            progress = null;
+            installed = Installation.ListInstalled();
+        }
+    }
+
+    private async Task ActivateAsync(GameInstall install)
+    {
+        var current = Installation.ActiveVersion;
+        var downgrade = current is not null && ModVersion.Compare(install.Version, current) < 0;
+        var message = $"Switch the server from {current ?? "the current version"} to {install.Version}? A full backup is made first." +
+            (downgrade ? " This is a downgrade: worlds saved by the newer version may not load." : "");
+        var confirmed = await Dialogs.ShowMessageBoxAsync("Switch game version", message, yesText: "Switch", cancelText: "Cancel");
+        if (confirmed != true)
+        {
+            return;
+        }
+
+        busy = true;
+        progress = "Making a full backup…";
+        try
+        {
+            if (!CanSwitch)
+            {
+                throw new InvalidOperationException("Stop the server first.");
+            }
+
+            await Backups.CreateAsync(BackupScope.Full, $"before switching to {install.Version}", automatic: true);
+            Installation.Activate(install.Version);
+            Snackbar.Add($"The server will run {install.Version} from its next start. Check the Mods page for mods that don't support it.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        finally
+        {
+            busy = false;
+            progress = null;
+            installed = Installation.ListInstalled();
+        }
+    }
+
+    private async Task RemoveAsync(GameInstall install)
+    {
+        var confirmed = await Dialogs.ShowMessageBoxAsync("Remove version", $"Delete the downloaded {install.Version} server files?", yesText: "Remove", cancelText: "Cancel");
+        if (confirmed != true)
+        {
+            return;
+        }
+
+        try
+        {
+            Installation.Remove(install.Version);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+
+        installed = Installation.ListInstalled();
+    }
+
+    public void Dispose() => Server.StatusChanged -= OnStatusChanged;
+}

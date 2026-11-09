@@ -1,0 +1,443 @@
+@page "/mods"
+@implements IDisposable
+
+@using Microsoft.Extensions.Options
+@using VintageStoryServerManager.Core.Configuration
+@using VintageStoryServerManager.Core.ModDb
+@using VintageStoryServerManager.Core.Mods
+@using VintageStoryServerManager.Infrastructure.ModDb
+@using VintageStoryServerManager.Infrastructure.Mods
+
+@inject ModLibrary Library
+@inject ModInstaller Installer
+@inject IModDbClient ModDb
+@inject IGameServer Server
+@inject IOptions<ModDbOptions> ModDbOptions
+@inject ISnackbar Snackbar
+@inject IDialogService Dialogs
+
+<PageTitle>Mods</PageTitle>
+
+<MudText Typo="Typo.h4" GutterBottom="true">Mods</MudText>
+
+@if (changedSinceStart && snapshot.IsRunning)
+{
+    <MudAlert Severity="Severity.Info" Class="mb-4">
+        Mod changes take effect when the server restarts.
+        <AuthorizeView Roles="@Roles.OperatorOrAdmin" Context="auth">
+            <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Primary" Class="ml-3" Disabled="busy" OnClick="RestartServerAsync">Restart now</MudButton>
+        </AuthorizeView>
+    </MudAlert>
+}
+
+<MudTabs Elevation="1" Rounded="true" ApplyEffectsToContainer="true" TabPanelsClass="pa-4" @bind-ActivePanelIndex="activeTab">
+    <MudTabPanel Text="Installed">
+        <div class="d-flex flex-wrap gap-2 align-center mb-4">
+            <MudText>
+                Game version <strong>@(report?.GameVersion ?? "unknown")</strong> ·
+                @(report?.Mods.Count(m => m.Enabled) ?? 0) enabled, @(report?.Mods.Count(m => !m.Enabled) ?? 0) disabled
+            </MudText>
+            <MudSpacer />
+            <MudButton Variant="Variant.Text" StartIcon="@Icons.Material.Filled.Refresh" OnClick="Rescan">Rescan</MudButton>
+            <AuthorizeView Roles="@Roles.Admin" Context="auth">
+                <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Update" Disabled="busy" OnClick="CheckUpdatesAsync">Check for updates</MudButton>
+                <MudFileUpload T="IBrowserFile" Accept=".zip" FilesChanged="UploadAsync" Disabled="busy">
+                    <CustomContent Context="upload">
+                        <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Upload"
+                                   Disabled="busy" OnClick="@upload.OpenFilePickerAsync">Upload mod</MudButton>
+                    </CustomContent>
+                </MudFileUpload>
+            </AuthorizeView>
+        </div>
+
+        @if (busyMessage is not null)
+        {
+            <MudProgressLinear Color="Color.Primary" Indeterminate="true" Class="mb-2" />
+            <MudText Typo="Typo.body2" Class="mb-2">@busyMessage</MudText>
+        }
+
+        @if (report is { ErrorCount: > 0 })
+        {
+            <MudAlert Severity="Severity.Error" Class="mb-3">
+                @report.ErrorCount problem@(report.ErrorCount == 1 ? "" : "s") can stop mods (or the server) from loading. They're listed under each mod below.
+            </MudAlert>
+        }
+
+        @if (updates is { Count: > 0 })
+        {
+            <MudAlert Severity="Severity.Info" Class="mb-3">
+                @updates.Count update@(updates.Count == 1 ? "" : "s") available.
+            </MudAlert>
+        }
+        else if (updates is { Count: 0 })
+        {
+            <MudAlert Severity="Severity.Success" Class="mb-3">All mods on the mod database are up to date for this game version.</MudAlert>
+        }
+
+        <MudTable Items="report?.Mods" Loading="report is null" Dense="true" Hover="true" Elevation="0" Breakpoint="Breakpoint.Sm">
+            <HeaderContent>
+                <MudTh>Mod</MudTh>
+                <MudTh>Version</MudTh>
+                <MudTh>Status</MudTh>
+                <MudTh>Size</MudTh>
+                <AuthorizeView Roles="@Roles.Admin" Context="auth"><MudTh Style="text-align:right">Actions</MudTh></AuthorizeView>
+            </HeaderContent>
+            <RowTemplate>
+                @{ var issues = report!.IssuesFor(context).ToList(); }
+                <MudTd DataLabel="Mod">
+                    <MudText Typo="Typo.body1">@context.DisplayName</MudText>
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">
+                        @(context.ModId ?? "no mod id") · @context.FileName
+                        @if (context.Info?.Authors is { Count: > 0 } authors)
+                        {
+                            <span> · by @string.Join(", ", authors)</span>
+                        }
+                    </MudText>
+                    @foreach (var issue in issues)
+                    {
+                        <MudAlert Severity="@ServerDisplay.SnackbarSeverity(issue.Severity)" Dense="true" Class="mt-1" NoIcon="false">@issue.Message</MudAlert>
+                    }
+                </MudTd>
+                <MudTd DataLabel="Version">
+                    @(context.Info?.Version ?? "–")
+                    @if (UpdateFor(context) is { } update)
+                    {
+                        <MudChip T="string" Size="Size.Small" Color="Color.Info" Class="ml-1">@update.AvailableVersion available</MudChip>
+                    }
+                </MudTd>
+                <MudTd DataLabel="Status">
+                    <MudChip T="string" Size="Size.Small" Color="@(context.Enabled ? Color.Success : Color.Default)">@(context.Enabled ? "Enabled" : "Disabled")</MudChip>
+                </MudTd>
+                <MudTd DataLabel="Size">@ServerDisplay.Size(context.SizeBytes)</MudTd>
+                <AuthorizeView Roles="@Roles.Admin" Context="auth">
+                    <MudTd Style="text-align:right; white-space:nowrap">
+                        @if (UpdateFor(context) is { } update)
+                        {
+                            <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Info" Disabled="busy"
+                                       OnClick="() => PlanAsync(update.ModId)">Update</MudButton>
+                        }
+                        @if (context.Enabled)
+                        {
+                            <MudButton Size="Size.Small" Variant="Variant.Outlined" Disabled="busy" OnClick="() => DisableAsync(context)">Disable</MudButton>
+                        }
+                        else
+                        {
+                            <MudButton Size="Size.Small" Variant="Variant.Outlined" Disabled="busy" OnClick="() => EnableAsync(context)">Enable</MudButton>
+                        }
+                        <MudIconButton Icon="@Icons.Material.Filled.Delete" Color="Color.Error" Size="Size.Small" Disabled="busy"
+                                       OnClick="() => DeleteAsync(context)" aria-label="Delete mod" title="Delete mod" />
+                    </MudTd>
+                </AuthorizeView>
+            </RowTemplate>
+            <NoRecordsContent>
+                <MudText>No mods installed. Upload a mod or install one from the mod database.</MudText>
+            </NoRecordsContent>
+        </MudTable>
+        <MudText Typo="Typo.caption" Color="Color.Secondary" Class="mt-2 d-block">
+            Every change makes an automatic Mods backup first, so it can be rolled back from the Backups page.
+        </MudText>
+    </MudTabPanel>
+
+    <MudTabPanel Text="Mod database">
+        <div class="d-flex gap-2 mb-4">
+            <MudTextField @bind-Value="searchText" Placeholder="Search mods.vintagestory.at" Variant="Variant.Outlined" Margin="Margin.Dense"
+                          Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search" Class="flex-grow-1"
+                          Immediate="true" OnKeyDown="@(e => e.Key == "Enter" ? SearchAsync() : Task.CompletedTask)" />
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="searching" OnClick="SearchAsync">Search</MudButton>
+        </div>
+
+        @if (searching)
+        {
+            <MudProgressLinear Color="Color.Primary" Indeterminate="true" Class="mb-2" />
+        }
+
+        @if (searchResults is not null)
+        {
+            <MudTable Items="searchResults" Dense="true" Hover="true" Elevation="0" Breakpoint="Breakpoint.Sm">
+                <HeaderContent>
+                    <MudTh>Mod</MudTh>
+                    <MudTh>Side</MudTh>
+                    <MudTh>Downloads</MudTh>
+                    <MudTh>Last release</MudTh>
+                    <AuthorizeView Roles="@Roles.Admin" Context="auth"><MudTh /></AuthorizeView>
+                </HeaderContent>
+                <RowTemplate>
+                    <MudTd DataLabel="Mod">
+                        <MudLink Href="@ModPage(context)" Target="_blank" Typo="Typo.body1">@context.Name</MudLink>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">@context.Key@(context.Author is null ? "" : $" · by {context.Author}")</MudText>
+                        @if (!string.IsNullOrWhiteSpace(context.Summary))
+                        {
+                            <MudText Typo="Typo.body2">@context.Summary</MudText>
+                        }
+                    </MudTd>
+                    <MudTd DataLabel="Side">@context.Side</MudTd>
+                    <MudTd DataLabel="Downloads">@context.Downloads.ToString("N0")</MudTd>
+                    <MudTd DataLabel="Last release">@context.LastReleased</MudTd>
+                    <AuthorizeView Roles="@Roles.Admin" Context="auth">
+                        <MudTd Style="text-align:right">
+                            @if (IsInstalled(context))
+                            {
+                                <MudChip T="string" Size="Size.Small" Color="Color.Success">Installed</MudChip>
+                            }
+                            else
+                            {
+                                <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Primary" Disabled="busy"
+                                           OnClick="() => PlanAsync(context.Key)">Install</MudButton>
+                            }
+                        </MudTd>
+                    </AuthorizeView>
+                </RowTemplate>
+                <NoRecordsContent>
+                    <MudText>No mods found.</MudText>
+                </NoRecordsContent>
+            </MudTable>
+        }
+    </MudTabPanel>
+</MudTabs>
+
+@if (plan is not null)
+{
+    <MudPaper Class="pa-4 mt-4" Elevation="3" Outlined="true">
+        <MudText Typo="Typo.h6" GutterBottom="true">Install plan</MudText>
+        @foreach (var error in plan.Errors)
+        {
+            <MudAlert Severity="Severity.Error" Dense="true" Class="mb-1">@error</MudAlert>
+        }
+        @foreach (var warning in plan.Warnings)
+        {
+            <MudAlert Severity="Severity.Warning" Dense="true" Class="mb-1">@warning</MudAlert>
+        }
+        @if (plan.Steps.Count > 0)
+        {
+            <MudSimpleTable Dense="true" Elevation="0" Class="my-2">
+                <thead><tr><th>Mod</th><th>Version</th><th>Why</th></tr></thead>
+                <tbody>
+                    @foreach (var step in plan.Steps)
+                    {
+                        <tr>
+                            <td>@step.Name <MudText Typo="Typo.caption" Color="Color.Secondary">@step.ModId</MudText></td>
+                            <td>@(step.ReplacesVersion is { } old ? $"{old} → " : "")@step.Release.ModVersion</td>
+                            <td>@step.Reason</td>
+                        </tr>
+                    }
+                </tbody>
+            </MudSimpleTable>
+        }
+        <div class="d-flex gap-2 mt-2">
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="busy || !plan.CanApply" OnClick="ApplyPlanAsync">
+                Install @plan.Steps.Count mod@(plan.Steps.Count == 1 ? "" : "s")
+            </MudButton>
+            <MudButton Variant="Variant.Text" Disabled="busy" OnClick="DiscardPlan">Cancel</MudButton>
+        </div>
+    </MudPaper>
+}
+
+@code {
+    private const long MaxUploadBytes = 512L * 1024 * 1024;
+
+    private ModScanReport? report;
+    private IReadOnlyList<ModUpdate>? updates;
+    private IReadOnlyList<ModDbSearchResult>? searchResults;
+    private InstallPlan? plan;
+    private ServerSnapshot snapshot = default!;
+    private string searchText = "";
+    private string? busyMessage;
+    private bool busy;
+    private bool searching;
+    private bool changedSinceStart;
+    private int activeTab;
+
+    protected override void OnInitialized()
+    {
+        snapshot = Server.Snapshot;
+        Server.StatusChanged += OnStatusChanged;
+        Rescan();
+    }
+
+    private void OnStatusChanged(ServerSnapshot updated)
+    {
+        if (updated.Status == ServerStatus.Starting)
+        {
+            changedSinceStart = false;
+        }
+
+        snapshot = updated;
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    private void Rescan() => report = Library.Scan();
+
+    private ModUpdate? UpdateFor(InstalledMod mod) =>
+        mod.Enabled ? updates?.FirstOrDefault(u => u.FileName == mod.FileName) : null;
+
+    private bool IsInstalled(ModDbSearchResult result) =>
+        report?.Mods.Any(m => m.ModId is not null && result.ModIdStrings.Contains(m.ModId, StringComparer.OrdinalIgnoreCase)) == true;
+
+    private string ModPage(ModDbSearchResult result) =>
+        $"{ModDbOptions.Value.BaseUrl.TrimEnd('/')}/{result.UrlAlias ?? $"show/mod/{result.ModId}"}";
+
+    private Task EnableAsync(InstalledMod mod) =>
+        ChangeAsync($"Enabling {mod.DisplayName}…", () => Library.EnableAsync(mod.FileName), $"Enabled {mod.DisplayName}.");
+
+    private Task DisableAsync(InstalledMod mod) =>
+        ChangeAsync($"Disabling {mod.DisplayName}…", () => Library.DisableAsync(mod.FileName), $"Disabled {mod.DisplayName}.");
+
+    private async Task DeleteAsync(InstalledMod mod)
+    {
+        var confirmed = await Dialogs.ShowMessageBoxAsync("Delete mod",
+            $"Delete {mod.DisplayName} ({mod.FileName})? A backup of your mods is made first.", yesText: "Delete", cancelText: "Cancel");
+        if (confirmed == true)
+        {
+            await ChangeAsync($"Deleting {mod.DisplayName}…", () => Library.DeleteAsync(mod.FileName, mod.Enabled), $"Deleted {mod.DisplayName}.");
+        }
+    }
+
+    private async Task UploadAsync(IBrowserFile? file)
+    {
+        if (file is null)
+        {
+            return;
+        }
+
+        await ChangeAsync($"Installing {file.Name}…", async () =>
+        {
+            await using var stream = file.OpenReadStream(MaxUploadBytes);
+            var info = await Library.InstallUploadAsync(stream, file.Name);
+            Snackbar.Add($"Installed {info.Name} {info.Version}.", Severity.Success);
+        }, null);
+    }
+
+    private async Task CheckUpdatesAsync()
+    {
+        busy = true;
+        busyMessage = "Checking the mod database for updates…";
+        try
+        {
+            updates = await Installer.CheckUpdatesAsync();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Could not check for updates: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            busy = false;
+            busyMessage = null;
+        }
+    }
+
+    private async Task SearchAsync()
+    {
+        searching = true;
+        try
+        {
+            searchResults = await ModDb.SearchAsync(searchText);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Search failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            searching = false;
+        }
+    }
+
+    private async Task PlanAsync(string modKey)
+    {
+        DiscardPlan();
+        busy = true;
+        busyMessage = $"Resolving {modKey} and its dependencies…";
+        try
+        {
+            plan = await Installer.PlanAsync(modKey);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Could not prepare the install: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            busy = false;
+            busyMessage = null;
+        }
+    }
+
+    private async Task ApplyPlanAsync()
+    {
+        if (plan is null)
+        {
+            return;
+        }
+
+        var current = plan;
+        await ChangeAsync("Installing…", async () =>
+        {
+            plan = null;
+            await Installer.ApplyAsync(current);
+            Snackbar.Add($"Installed {string.Join(", ", current.Steps.Select(s => $"{s.Name} {s.Release.ModVersion}"))}.", Severity.Success);
+        }, null);
+
+        if (updates is not null)
+        {
+            updates = updates.Where(u => !current.Steps.Any(s => string.Equals(s.ModId, u.ModId, StringComparison.OrdinalIgnoreCase))).ToList();
+        }
+    }
+
+    private void DiscardPlan()
+    {
+        if (plan is not null)
+        {
+            Installer.Discard(plan);
+            plan = null;
+        }
+    }
+
+    private async Task RestartServerAsync()
+    {
+        busy = true;
+        try
+        {
+            await Server.RestartAsync();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    private async Task ChangeAsync(string progress, Func<Task> action, string? success)
+    {
+        busy = true;
+        busyMessage = progress;
+        try
+        {
+            await action();
+            changedSinceStart = true;
+            if (success is not null)
+            {
+                Snackbar.Add(success, Severity.Success);
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Error);
+        }
+        finally
+        {
+            busy = false;
+            busyMessage = null;
+            Rescan();
+        }
+    }
+
+    public void Dispose()
+    {
+        Server.StatusChanged -= OnStatusChanged;
+        DiscardPlan();
+    }
+}

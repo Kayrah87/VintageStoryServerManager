@@ -4,8 +4,12 @@ using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+using MudBlazor.Services;
+using VintageStoryServerManager.Core.Backups;
 using VintageStoryServerManager.Core.Configuration;
+using VintageStoryServerManager.Core.Security;
 using VintageStoryServerManager.Infrastructure;
+using VintageStoryServerManager.Infrastructure.Logs;
 using VintageStoryServerManager.Web.Components;
 using VintageStoryServerManager.Web.Components.Account;
 using VintageStoryServerManager.Web.Data;
@@ -30,6 +34,12 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
     options.KnownProxies.Clear();
 });
 builder.Services.AddHealthChecks();
+
+// Give the game server time to save and stop cleanly when the container shuts down.
+var serverOptions = builder.Configuration.GetSection(ServerOptions.SectionName).Get<ServerOptions>() ?? new ServerOptions();
+builder.Services.Configure<HostOptions>(o => o.ShutdownTimeout = TimeSpan.FromSeconds(serverOptions.StopTimeoutSeconds + 15));
+
+builder.Services.AddMudServices();
 
 // Add services to the container.
 builder.Services.AddRazorComponents()
@@ -114,5 +124,18 @@ app.MapRazorComponents<App>()
 
 // Add additional endpoints required by the Identity /Account Razor components.
 app.MapAdditionalIdentityEndpoints();
+
+app.MapGet("/api/backups/{fileName}", (string fileName, IBackupService backups) =>
+        backups.GetPath(fileName) is { } path
+            ? Results.File(path, "application/zip", fileName, enableRangeProcessing: true)
+            : Results.NotFound())
+    .RequireAuthorization(policy => policy.RequireRole(Roles.Admin));
+
+app.MapGet("/api/logs/{**name}", (string name, LogService logs) =>
+        logs.GetPath(name) is { } path
+            ? Results.Stream(new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete),
+                "text/plain", Path.GetFileName(path))
+            : Results.NotFound())
+    .RequireAuthorization(policy => policy.RequireRole(Roles.Admin, Roles.Operator));
 
 await app.RunAsync();
