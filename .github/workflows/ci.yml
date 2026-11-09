@@ -3,7 +3,9 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -33,3 +35,40 @@ jobs:
         run: dotnet build VintageStoryServerManager.slnx -c Release --no-restore
       - name: Test
         run: dotnet test VintageStoryServerManager.slnx -c Release --no-build
+
+  # Publishes ghcr.io/<owner>/vintagestoryservermanager after tests pass on main or a v* tag.
+  image:
+    needs: build-test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read bundled game version
+        id: vs
+        run: echo "version=$(grep -m1 '^ARG VS_VERSION=' Dockerfile | cut -d= -f2)" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/vintagestoryservermanager
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=vs-${{ steps.vs.outputs.version }},enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=sha
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

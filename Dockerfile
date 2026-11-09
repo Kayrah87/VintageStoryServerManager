@@ -22,9 +22,12 @@ ADD https://cdn.vintagestory.at/gamefiles/${VS_CHANNEL}/vs_server_linux-x64_${VS
 RUN if [ -n "$VS_MD5" ]; then echo "$VS_MD5  /tmp/vs_server.tar.gz" | md5sum -c -; fi \
     && mkdir -p /opt/vintagestory \
     && tar -xzf /tmp/vs_server.tar.gz -C /opt/vintagestory \
+    && printf '%s' "$VS_VERSION" > /opt/vintagestory/.vsversion \
     && rm /tmp/vs_server.tar.gz
 
 # ---- Runtime: Vintage Story server + manager (both run on .NET 10) ----------
+# The manager runs the game as a child process with the same dotnet host. Other server
+# versions can be downloaded into /data/game at runtime from the Game versions page.
 FROM mcr.microsoft.com/dotnet/aspnet:10.0
 ARG VS_VERSION=1.22.7
 LABEL org.opencontainers.image.title="Vintage Story Server Manager" \
@@ -36,6 +39,7 @@ COPY --from=build /app /app
 
 ENV VS_VERSION=${VS_VERSION} \
     ASPNETCORE_HTTP_PORTS=8080 \
+    DOTNET_CLI_TELEMETRY_OPTOUT=1 \
     DataPaths__Root=/data \
     DataPaths__GameInstallDirectory=/opt/vintagestory
 
