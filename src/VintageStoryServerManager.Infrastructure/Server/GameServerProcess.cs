@@ -149,6 +149,50 @@ public sealed class GameServerProcess(
         }
     }
 
+    /// <summary>
+    /// Points serverconfig.json at this container's data folder when it was written for another
+    /// one (e.g. moved over from an image that kept its data in /vintagestory/data).
+    /// </summary>
+    private void FixImportedPaths()
+    {
+        var configPath = paths.Value.ServerConfigPath;
+        try
+        {
+            if (!File.Exists(configPath) ||
+                System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(configPath)) is not System.Text.Json.Nodes.JsonObject config)
+            {
+                return;
+            }
+
+            var changes = ImportedDataPaths.Fix(config, paths.Value.GameDataDirectory, File.Exists);
+            if (changes.Count == 0)
+            {
+                return;
+            }
+
+            var original = Path.Combine(paths.Value.GameDataDirectory, "serverconfig.before-path-fix.json");
+            if (!File.Exists(original))
+            {
+                File.Copy(configPath, original);
+            }
+
+            var temp = configPath + ".tmp";
+            File.WriteAllText(temp, config.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+            File.Move(temp, configPath, overwrite: true);
+
+            logger.LogInformation("Moved serverconfig.json paths to this data folder: {Changes}", string.Join("; ", changes));
+            AddLine($"serverconfig.json was written for another data folder; updated its paths (original kept as {Path.GetFileName(original)}):", ConsoleLineKind.Manager);
+            foreach (var change in changes)
+            {
+                AddLine($"  {change}", ConsoleLineKind.Manager);
+            }
+        }
+        catch (Exception ex) when (ex is System.Text.Json.JsonException or IOException or UnauthorizedAccessException)
+        {
+            logger.LogWarning(ex, "Could not check serverconfig.json for paths from another data folder");
+        }
+    }
+
     private void StartCore()
     {
         lock (_gate)
@@ -170,6 +214,7 @@ public sealed class GameServerProcess(
         }
 
         Directory.CreateDirectory(paths.Value.GameDataDirectory);
+        FixImportedPaths();
 
         var startInfo = new ProcessStartInfo(DotnetHost())
         {
