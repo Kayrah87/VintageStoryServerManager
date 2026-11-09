@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using VintageStoryServerManager.Core.Backups;
@@ -39,16 +40,32 @@ public sealed class ModInstaller(
     IBackupService backups,
     MaintenanceLock maintenance,
     IOptions<DataPathOptions> paths,
+    IMemoryCache cache,
     ILogger<ModInstaller> logger)
 {
     private const int MaxSteps = 50;
+
+    /// <summary>How long an update check is reused while the installed mods stay the same.</summary>
+    private static readonly TimeSpan UpdateCheckLifetime = TimeSpan.FromMinutes(10);
 
     /// <summary>
     /// Works out what installing <paramref name="modKey"/> (a mod id string, alias or numeric id)
     /// involves: the mod itself plus any dependency that is missing or too old.
     /// </summary>
-    public async Task<InstallPlan> PlanAsync(string modKey, CancellationToken cancellationToken = default)
+    public Task<InstallPlan> PlanAsync(string modKey, CancellationToken cancellationToken = default) =>
+        PlanAsync([modKey], cancellationToken);
+
+    /// <summary>
+    /// One plan for several mods (e.g. updating everything at once): each mod plus whatever its
+    /// dependencies need, installed together after a single backup.
+    /// </summary>
+    public async Task<InstallPlan> PlanAsync(IReadOnlyList<string> modKeys, CancellationToken cancellationToken = default)
     {
+        if (modKeys.Count == 0)
+        {
+            throw new ArgumentException("No mods to install.", nameof(modKeys));
+        }
+
         var report = library.Scan();
         var gameVersion = report.GameVersion;
         var installed = report.Mods
@@ -56,10 +73,13 @@ public sealed class ModInstaller(
             .GroupBy(m => m.ModId!, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(g => g.Key, g => g.First().Info!.Version, StringComparer.OrdinalIgnoreCase);
 
-        var plan = new InstallPlan { RootModId = modKey };
+        var plan = new InstallPlan { RootModId = string.Join(", ", modKeys) };
         var queue = new Queue<(string Key, string? MinVersion, string? RequiredBy)>();
         var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        queue.Enqueue((modKey, null, null));
+        foreach (var modKey in modKeys)
+        {
+            queue.Enqueue((modKey, null, null));
+        }
 
         try
         {
@@ -200,11 +220,22 @@ public sealed class ModInstaller(
         plan.DownloadedFiles.Clear();
     }
 
-    /// <summary>Installed mods with a newer release for the current game version on the mod database.</summary>
-    public async Task<IReadOnlyList<ModUpdate>> CheckUpdatesAsync(CancellationToken cancellationToken = default)
+    /// <summary>
+    /// Installed mods with a newer release for the current game version on the mod database.
+    /// A result is reused for a few minutes unless <paramref name="refresh"/> is set or the
+    /// installed mods change.
+    /// </summary>
+    public async Task<IReadOnlyList<ModUpdate>> CheckUpdatesAsync(bool refresh = false, CancellationToken cancellationToken = default)
     {
         var report = library.Scan();
         var mods = report.Mods.Where(m => m.Enabled && m.Info is not null).ToList();
+        var cacheKey = "mod-updates:" + report.GameVersion + ":" +
+            string.Join("|", mods.Select(m => $"{m.FileName}={m.Info!.Version}").Order(StringComparer.Ordinal));
+        if (!refresh && cache.TryGetValue(cacheKey, out IReadOnlyList<ModUpdate>? cached) && cached is not null)
+        {
+            return cached;
+        }
+
         var updates = new List<ModUpdate>();
         using var throttle = new SemaphoreSlim(4);
 
@@ -233,7 +264,9 @@ public sealed class ModInstaller(
             }
         }));
 
-        return updates.OrderBy(u => u.Name, StringComparer.OrdinalIgnoreCase).ToList();
+        IReadOnlyList<ModUpdate> result = updates.OrderBy(u => u.Name, StringComparer.OrdinalIgnoreCase).ToList();
+        cache.Set(cacheKey, result, UpdateCheckLifetime);
+        return result;
     }
 
     private async Task<string> DownloadAsync(ModDbRelease release, CancellationToken cancellationToken)

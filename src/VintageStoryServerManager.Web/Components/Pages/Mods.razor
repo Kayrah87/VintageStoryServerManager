@@ -35,8 +35,9 @@
             </MudText>
             <MudSpacer />
             <MudButton Variant="Variant.Text" StartIcon="@Icons.Material.Filled.Refresh" OnClick="Rescan">Rescan</MudButton>
+            <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Update" Disabled="busy || checkingUpdates"
+                       OnClick="() => CheckUpdatesAsync(refresh: true)">Check for updates</MudButton>
             <AuthorizeView Roles="@Roles.Admin" Context="auth">
-                <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Update" Disabled="busy" OnClick="CheckUpdatesAsync">Check for updates</MudButton>
                 <MudFileUpload T="IBrowserFile" Accept=".zip" FilesChanged="UploadAsync" Disabled="busy">
                     <CustomContent Context="upload">
                         <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Upload"
@@ -59,15 +60,32 @@
             </MudAlert>
         }
 
-        @if (updates is { Count: > 0 })
+        @if (checkingUpdates)
         {
-            <MudAlert Severity="Severity.Info" Class="mb-3">
-                @updates.Count update@(updates.Count == 1 ? "" : "s") available.
+            <MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-3 d-flex align-center gap-2">
+                <MudProgressCircular Size="Size.Small" Indeterminate="true" /> Checking the mod database for updates…
+            </MudText>
+        }
+        else if (VisibleUpdates is { Count: > 0 } available)
+        {
+            <MudAlert Severity="Severity.Info" Class="mb-3 mods-updates-alert">
+                <div class="d-flex flex-wrap align-center gap-3">
+                    <span>
+                        <strong>@available.Count update@(available.Count == 1 ? "" : "s") available:</strong>
+                        @string.Join(", ", available.Select(u => $"{u.Name} {u.AvailableVersion}"))
+                    </span>
+                    <AuthorizeView Roles="@Roles.Admin" Context="auth">
+                        <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Info" StartIcon="@Icons.Material.Filled.SystemUpdateAlt"
+                                   Disabled="busy" OnClick="UpdateAllAsync">Update all (@available.Count)</MudButton>
+                    </AuthorizeView>
+                </div>
             </MudAlert>
         }
-        else if (updates is { Count: 0 })
+        else if (updates is not null && report is { Mods.Count: > 0 })
         {
-            <MudAlert Severity="Severity.Success" Class="mb-3">All mods on the mod database are up to date for this game version.</MudAlert>
+            <MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-3">
+                All mods are up to date for this game version (checked @updatesCheckedAt?.ToLocalTime().ToString("HH:mm")).
+            </MudText>
         }
 
         <MudTable Items="report?.Mods" Loading="report is null" Dense="true" Hover="true" Elevation="0" Breakpoint="Breakpoint.Sm">
@@ -110,7 +128,8 @@
                         @if (UpdateFor(context) is { } update)
                         {
                             <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Info" Disabled="busy"
-                                       OnClick="() => PlanAsync(update.ModId)">Update</MudButton>
+                                       StartIcon="@Icons.Material.Filled.SystemUpdateAlt"
+                                       OnClick="() => PlanAsync(update.ModId)">Update to @update.AvailableVersion</MudButton>
                         }
                         @if (context.Enabled)
                         {
@@ -155,6 +174,8 @@
     private Task<AuthenticationState> AuthenticationState { get; set; } = default!;
 
     private IReadOnlyList<ModUpdate>? updates;
+    private DateTimeOffset? updatesCheckedAt;
+    private bool checkingUpdates;
     private ServerSnapshot snapshot = default!;
     private string? busyMessage;
     private bool busy;
@@ -186,10 +207,25 @@
         _ = InvokeAsync(StateHasChanged);
     }
 
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // Runs once the page is interactive (not during prerendering), so the check happens once.
+        if (firstRender)
+        {
+            await CheckUpdatesAsync(refresh: false);
+        }
+    }
+
     private void Rescan() => report = Library.Scan();
 
+    /// <summary>Updates for mods that are still installed and enabled at the checked version.</summary>
+    private IReadOnlyList<ModUpdate> VisibleUpdates =>
+        report?.Mods.Select(UpdateFor).OfType<ModUpdate>().ToList() ?? [];
+
     private ModUpdate? UpdateFor(InstalledMod mod) =>
-        mod.Enabled ? updates?.FirstOrDefault(u => u.FileName == mod.FileName) : null;
+        mod.Enabled
+            ? updates?.FirstOrDefault(u => u.FileName == mod.FileName && u.InstalledVersion == mod.Info?.Version)
+            : null;
 
     private Task EnableAsync(InstalledMod mod) =>
         ChangeAsync($"Enabling {mod.DisplayName}…", () => Library.EnableAsync(mod.FileName), $"Enabled {mod.DisplayName}.");
@@ -222,13 +258,19 @@
         }, null);
     }
 
-    private async Task CheckUpdatesAsync()
+    private async Task CheckUpdatesAsync(bool refresh)
     {
-        busy = true;
-        busyMessage = "Checking the mod database for updates…";
+        if (checkingUpdates)
+        {
+            return;
+        }
+
+        checkingUpdates = true;
+        StateHasChanged();
         try
         {
-            updates = await Installer.CheckUpdatesAsync();
+            updates = await Installer.CheckUpdatesAsync(refresh);
+            updatesCheckedAt = DateTimeOffset.Now;
         }
         catch (Exception ex)
         {
@@ -236,12 +278,23 @@
         }
         finally
         {
-            busy = false;
-            busyMessage = null;
+            checkingUpdates = false;
+            StateHasChanged();
         }
     }
 
-    private async Task PlanAsync(string modKey)
+    private Task PlanAsync(string modKey) =>
+        PlanAsync(() => Installer.PlanAsync(modKey), $"Resolving {modKey} and its dependencies…", "Install plan");
+
+    private Task UpdateAllAsync()
+    {
+        var modIds = VisibleUpdates.Select(u => u.ModId).ToList();
+        return modIds.Count == 0
+            ? Task.CompletedTask
+            : PlanAsync(() => Installer.PlanAsync(modIds), $"Downloading {modIds.Count} update{(modIds.Count == 1 ? "" : "s")} and checking dependencies…", "Update all mods");
+    }
+
+    private async Task PlanAsync(Func<Task<InstallPlan>> makePlan, string progress, string title)
     {
         if (busy)
         {
@@ -250,10 +303,10 @@
 
         InstallPlan plan;
         busy = planning = true;
-        busyMessage = $"Resolving {modKey} and its dependencies…";
+        busyMessage = progress;
         try
         {
-            plan = await Installer.PlanAsync(modKey);
+            plan = await makePlan();
         }
         catch (Exception ex)
         {
@@ -269,7 +322,7 @@
         // Remove the overlay before the dialog opens; it would otherwise sit on top of it.
         StateHasChanged();
         var parameters = new DialogParameters<InstallPlanDialog> { { d => d.Plan, plan } };
-        var dialog = await Dialogs.ShowAsync<InstallPlanDialog>("Install plan", parameters,
+        var dialog = await Dialogs.ShowAsync<InstallPlanDialog>(title, parameters,
             new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, CloseOnEscapeKey = true });
         var result = await dialog.Result;
         if (result is null || result.Canceled)
@@ -278,7 +331,7 @@
             return;
         }
 
-        await ChangeAsync("Installing…", async () =>
+        await ChangeAsync(plan.Steps.Count == 1 ? $"Installing {plan.Steps[0].Name}…" : $"Installing {plan.Steps.Count} mods…", async () =>
         {
             await Installer.ApplyAsync(plan);
             Snackbar.Add($"Installed {string.Join(", ", plan.Steps.Select(s => $"{s.Name} {s.Release.ModVersion}"))}.", Severity.Success);

@@ -87,7 +87,9 @@ public sealed class ModInstallerTests : IDisposable
     private readonly FakeModDb _modDb = new();
 
     private ModInstaller Installer =>
-        new(_modDb, _ctx.Library, _ctx.Backups, _ctx.Lock, _ctx.Root.Options, NullLogger<ModInstaller>.Instance);
+        new(_modDb, _ctx.Library, _ctx.Backups, _ctx.Lock, _ctx.Root.Options, _cache, NullLogger<ModInstaller>.Instance);
+
+    private readonly Microsoft.Extensions.Caching.Memory.MemoryCache _cache = new(new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions());
 
     [Fact]
     public async Task Installs_a_mod_with_its_missing_dependencies()
@@ -190,6 +192,42 @@ public sealed class ModInstallerTests : IDisposable
         var update = Assert.Single(updates);
         Assert.Equal("exlib", update.ModId);
         Assert.Equal("0.8.4", update.AvailableVersion);
+    }
+
+    [Fact]
+    public async Task Reuses_an_update_check_until_the_mods_change_or_a_refresh_is_asked_for()
+    {
+        TestZips.WriteMod(_ctx.Paths.ModsDirectory, "exlib.zip", "exlib", "0.7.2");
+        _modDb.Add("exlib", "0.8.4", ["1.22.7"]);
+        Assert.Single(await Installer.CheckUpdatesAsync());
+
+        _modDb.Add("exlib", "0.8.5", ["1.22.7"]);
+        Assert.Equal("0.8.4", Assert.Single(await Installer.CheckUpdatesAsync()).AvailableVersion);
+        Assert.Equal("0.8.5", Assert.Single(await Installer.CheckUpdatesAsync(refresh: true)).AvailableVersion);
+
+        TestZips.WriteMod(_ctx.Paths.ModsDirectory, "exlib.zip", "exlib", "0.8.5");
+        Assert.Empty(await Installer.CheckUpdatesAsync());
+    }
+
+    [Fact]
+    public async Task Updates_several_mods_in_one_plan()
+    {
+        TestZips.WriteMod(_ctx.Paths.ModsDirectory, "exlib.zip", "exlib", "0.7.2");
+        TestZips.WriteMod(_ctx.Paths.ModsDirectory, "other.zip", "other", "1.0.0");
+        _modDb
+            .Add("exlib", "0.8.4", ["1.22.7"])
+            .Add("other", "1.1.0", ["1.22.7"]);
+
+        var updates = await Installer.CheckUpdatesAsync();
+        var plan = await Installer.PlanAsync(updates.Select(u => u.ModId).ToList());
+
+        Assert.True(plan.CanApply);
+        Assert.Equal(["exlib", "other"], plan.Steps.Select(s => s.ModId).Order());
+        Assert.All(plan.Steps, s => Assert.Equal("Update", s.Reason));
+        await Installer.ApplyAsync(plan);
+
+        Assert.Empty(await Installer.CheckUpdatesAsync());
+        Assert.Single(await _ctx.Backups.ListAsync());
     }
 
     public void Dispose() => _ctx.Dispose();

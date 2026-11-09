@@ -31,7 +31,7 @@
     <DialogActions>
         <MudButton OnClick="() => MudDialog.Cancel()">Cancel</MudButton>
         <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="!Plan.CanApply" OnClick="() => MudDialog.Close(DialogResult.Ok(true))">
-            Install @Plan.Steps.Count mod@(Plan.Steps.Count == 1 ? "" : "s")
+            @(Plan.Steps.Count > 0 && Plan.Steps.All(s => s.ReplacesVersion is not null) ? "Update" : "Install") @Plan.Steps.Count mod@(Plan.Steps.Count == 1 ? "" : "s")
         </MudButton>
     </DialogActions>
 </MudDialog>
