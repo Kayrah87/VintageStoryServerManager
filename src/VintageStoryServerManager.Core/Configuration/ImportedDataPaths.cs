@@ -3,51 +3,69 @@ using System.Text.Json.Nodes;
 namespace VintageStoryServerManager.Core.Configuration;
 
 /// <summary>
-/// Repairs absolute paths in a serverconfig.json that was written by another container or host.
+/// Repairs paths in a serverconfig.json that was written by another container or host.
 /// The game stores the world location (WorldConfig.SaveFileLocation) and mod folders (ModPaths)
-/// as absolute paths, so data from e.g. an image that used /vintagestory/data points at folders
-/// that don't exist here, and the server refuses to start.
+/// as paths relative to wherever the old server ran (e.g. /vintagestory/data/Saves/default.vcdbs,
+/// or ./data/Saves/default.vcdbs for a server started with --dataPath ./data). Here they point
+/// at folders that don't exist, and the server refuses to start.
 /// </summary>
 public static class ImportedDataPaths
 {
     /// <summary>
     /// Rewrites paths under the old data folder to <paramref name="dataDirectory"/> when the world
     /// file is missing at its recorded location but present at the same place under
-    /// <paramref name="dataDirectory"/>. Returns a description of each change; empty if none.
+    /// <paramref name="dataDirectory"/>. Relative paths are resolved against
+    /// <paramref name="workingDirectory"/>, where the game runs. Returns a description of each
+    /// change; empty if none.
     /// </summary>
-    public static IReadOnlyList<string> Fix(JsonObject config, string dataDirectory, Func<string, bool> fileExists)
+    public static IReadOnlyList<string> Fix(JsonObject config, string dataDirectory, string workingDirectory, Func<string, bool> fileExists)
     {
         var dataRoot = dataDirectory.TrimEnd('/');
-        if (FindOldRoot(config, dataRoot, fileExists) is not { } oldRoot)
+        if (config["WorldConfig"] is not JsonObject world ||
+            world["SaveFileLocation"] is not JsonValue location ||
+            !location.TryGetValue<string>(out var save) ||
+            FindOldRoot(save, dataRoot, workingDirectory, fileExists) is not { } oldRoot)
         {
             return [];
         }
 
         var changes = new List<string>();
+        if (oldRoot.Length == 0)
+        {
+            // "Saves/default.vcdbs": only the world path can be told apart; relative ModPaths
+            // such as "Mods" mean the game's own folder and must stay as they are.
+            var updated = dataRoot + "/" + save;
+            changes.Add($"SaveFileLocation: \"{save}\" → \"{updated}\"");
+            world["SaveFileLocation"] = updated;
+            return changes;
+        }
+
         Rewrite(config, oldRoot, dataRoot, changes);
         return changes;
     }
 
-    /// <summary>The data folder the config was written for, if it differs from this one.</summary>
-    private static string? FindOldRoot(JsonObject config, string dataRoot, Func<string, bool> fileExists)
+    /// <summary>
+    /// The data folder the world path was written for ("/vintagestory/data", "./data", or "" for a
+    /// path that starts at Saves/), or null when the path already works here.
+    /// </summary>
+    private static string? FindOldRoot(string save, string dataRoot, string workingDirectory, Func<string, bool> fileExists)
     {
-        if (config["WorldConfig"] is not JsonObject world ||
-            world["SaveFileLocation"] is not JsonValue location ||
-            !location.TryGetValue<string>(out var save) ||
-            !save.StartsWith('/') ||
-            IsUnder(save, dataRoot) ||
-            fileExists(save))
+        var resolved = Path.GetFullPath(save, workingDirectory);
+        if (IsUnder(resolved, dataRoot) || fileExists(resolved))
         {
             return null;
         }
 
-        var saves = save.LastIndexOf("/Saves/", StringComparison.Ordinal);
-        if (saves <= 0 || !fileExists(dataRoot + save[saves..]))
+        var saves = save.StartsWith("Saves/", StringComparison.Ordinal)
+            ? 0
+            : save.LastIndexOf("/Saves/", StringComparison.Ordinal);
+        if (saves < 0)
         {
             return null;
         }
 
-        return save[..saves];
+        var rest = saves == 0 ? "/" + save : save[saves..];
+        return fileExists(dataRoot + rest) ? save[..saves] : null;
     }
 
     private static void Rewrite(JsonNode? node, string oldRoot, string dataRoot, List<string> changes)

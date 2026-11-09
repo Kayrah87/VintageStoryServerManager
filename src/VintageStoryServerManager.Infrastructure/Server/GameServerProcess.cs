@@ -164,7 +164,7 @@ public sealed class GameServerProcess(
                 return;
             }
 
-            var changes = ImportedDataPaths.Fix(config, paths.Value.GameDataDirectory, File.Exists);
+            var changes = ImportedDataPaths.Fix(config, paths.Value.GameDataDirectory, installation.ActiveDirectory, File.Exists);
             if (changes.Count == 0)
             {
                 return;
