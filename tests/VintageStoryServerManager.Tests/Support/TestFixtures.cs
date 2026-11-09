@@ -48,6 +48,14 @@ internal sealed class FakeGameServer : IGameServer
     /// <summary>Console lines the fake server prints in reply to a command.</summary>
     public Func<string, IEnumerable<string>>? Respond { get; set; }
 
+    /// <summary>When set, replies arrive this long after the command, like a busy server.</summary>
+    public TimeSpan? ReplyDelay { get; set; }
+
+    /// <summary>Commands sent while an earlier command was still waiting for its reply.</summary>
+    public int CommandsSentBeforeReply { get; private set; }
+
+    private int _awaitingReply;
+
     public event Action<ServerSnapshot>? StatusChanged;
 
     public event Action<ConsoleLine>? ConsoleOutput;
@@ -83,12 +91,33 @@ internal sealed class FakeGameServer : IGameServer
         }
 
         Commands.Add(command);
-        foreach (var line in Respond?.Invoke(command) ?? [])
+        var lines = Respond?.Invoke(command)?.ToList() ?? [];
+        if (ReplyDelay is not { } delay)
+        {
+            Emit(lines);
+            return Task.CompletedTask;
+        }
+
+        if (Interlocked.Increment(ref _awaitingReply) > 1)
+        {
+            CommandsSentBeforeReply++;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(delay);
+            Interlocked.Decrement(ref _awaitingReply);
+            Emit(lines);
+        });
+        return Task.CompletedTask;
+    }
+
+    private void Emit(IEnumerable<string> lines)
+    {
+        foreach (var line in lines)
         {
             ConsoleOutput?.Invoke(new ConsoleLine(DateTimeOffset.UtcNow, line, ConsoleLineKind.Output));
         }
-
-        return Task.CompletedTask;
     }
 }
 

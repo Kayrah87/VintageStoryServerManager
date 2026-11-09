@@ -136,6 +136,22 @@ public sealed class WorldSettingsTests : IDisposable
     }
 
     [Fact]
+    public async Task Waits_for_each_reply_before_sending_the_next_command()
+    {
+        // A busy game server can read several queued commands as one, so a read of setting A
+        // followed by a read of B would set A to "/worldconfig B".
+        _server.SetStatus(ServerStatus.Running);
+        _server.ReplyDelay = TimeSpan.FromMilliseconds(30);
+
+        var values = await Service.ReadCurrentAsync();
+        await Service.ApplyAsync(new Dictionary<string, string> { ["temporalStorms"] = "rare", ["allowCoordinateHud"] = "false" });
+
+        Assert.Equal(5, values.Values.Count);
+        Assert.Equal(7, _server.Commands.Count);
+        Assert.Equal(0, _server.CommandsSentBeforeReply);
+    }
+
+    [Fact]
     public async Task Applies_valid_changes_and_refuses_invalid_ones()
     {
         _server.SetStatus(ServerStatus.Running);

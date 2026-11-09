@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
@@ -24,8 +23,8 @@ public sealed class WorldSettingsService(
     TimeProvider time,
     ILogger<WorldSettingsService> logger)
 {
-    /// <summary>How long to wait for the last reply after the last command was sent.</summary>
-    private static readonly TimeSpan ResponseTimeout = TimeSpan.FromSeconds(10);
+    /// <summary>How long to wait for the server's reply to one command.</summary>
+    private static readonly TimeSpan ResponseTimeout = TimeSpan.FromSeconds(5);
     private static readonly System.Text.Json.JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
     private readonly Lock _schemaGate = new();
@@ -94,43 +93,34 @@ public sealed class WorldSettingsService(
         var schema = GetSchema() ?? throw new InvalidOperationException("The game's world setting definitions couldn't be read.");
         RequireRunning();
 
-        var codes = schema.Settings.ToDictionary(s => s.Code, s => s.Code, StringComparer.OrdinalIgnoreCase);
-        var values = new ConcurrentDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var complete = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        void OnLine(ConsoleLine line)
+        // One command at a time, each after the previous reply: when the game is busy it can read
+        // several queued console lines as one command, which would turn "/worldconfig a" followed by
+        // "/worldconfig b" into setting a to "/worldconfig b".
+        var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var setting in schema.Settings)
         {
-            if (WorldSettingsParser.TryParseCurrentValue(line.Text, out var code, out var value) && codes.TryGetValue(code, out var canonical))
+            var reply = await SendAndAwaitReplyAsync(
+                $"/worldconfig {setting.Code}",
+                text => WorldSettingsParser.TryParseCurrentValue(text, out var code, out _) &&
+                        string.Equals(code, setting.Code, StringComparison.OrdinalIgnoreCase),
+                cancellationToken);
+            if (reply is null)
             {
-                values[canonical] = value;
-                if (values.Count >= codes.Count)
-                {
-                    complete.TrySetResult();
-                }
+                break; // the server stopped answering; keep what was read
+            }
+
+            if (WorldSettingsParser.TryParseCurrentValue(reply, out _, out var value))
+            {
+                values[setting.Code] = value;
             }
         }
 
-        server.ConsoleOutput += OnLine;
-        try
-        {
-            foreach (var code in codes.Values)
-            {
-                await server.SendCommandAsync($"/worldconfig {code}", cancellationToken);
-            }
-
-            await Task.WhenAny(complete.Task, Task.Delay(ResponseTimeout, time, cancellationToken));
-        }
-        finally
-        {
-            server.ConsoleOutput -= OnLine;
-        }
-
-        if (values.IsEmpty)
+        if (values.Count == 0)
         {
             throw new TimeoutException("The server didn't report any world settings. Is it still starting?");
         }
 
-        var result = new WorldSettingValues(new Dictionary<string, string>(values, StringComparer.OrdinalIgnoreCase), time.GetUtcNow());
+        var result = new WorldSettingValues(values, time.GetUtcNow());
         SaveCache(result);
         return result;
     }
@@ -162,29 +152,17 @@ public sealed class WorldSettingsService(
 
         RequireRunning();
 
+        // One command at a time, each after the previous confirmation (see ReadCurrentAsync).
         var confirmed = 0;
-        var complete = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        void OnLine(ConsoleLine line)
+        foreach (var (code, value) in commands)
         {
-            if (WorldSettingsParser.IsValueSetConfirmation(line.Text) && Interlocked.Increment(ref confirmed) >= commands.Count)
+            var reply = await SendAndAwaitReplyAsync($"/worldconfig {code} {value}", WorldSettingsParser.IsValueSetConfirmation, cancellationToken);
+            if (reply is null)
             {
-                complete.TrySetResult();
-            }
-        }
-
-        server.ConsoleOutput += OnLine;
-        try
-        {
-            foreach (var (code, value) in commands)
-            {
-                await server.SendCommandAsync($"/worldconfig {code} {value}", cancellationToken);
+                break;
             }
 
-            await Task.WhenAny(complete.Task, Task.Delay(ResponseTimeout, time, cancellationToken));
-        }
-        finally
-        {
-            server.ConsoleOutput -= OnLine;
+            confirmed++;
         }
 
         if (confirmed < commands.Count)
@@ -202,6 +180,41 @@ public sealed class WorldSettingsService(
         }
 
         SaveCache(new WorldSettingValues(updated, time.GetUtcNow()));
+    }
+
+    /// <summary>
+    /// Sends a console command and waits for the first output line that <paramref name="isReply"/>
+    /// accepts. Returns that line, or null if none arrives within <see cref="ResponseTimeout"/>.
+    /// </summary>
+    private async Task<string?> SendAndAwaitReplyAsync(string command, Func<string, bool> isReply, CancellationToken cancellationToken)
+    {
+        var reply = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        void OnLine(ConsoleLine line)
+        {
+            if (isReply(line.Text))
+            {
+                reply.TrySetResult(line.Text);
+            }
+        }
+
+        server.ConsoleOutput += OnLine;
+        try
+        {
+            await server.SendCommandAsync(command, cancellationToken);
+            var finished = await Task.WhenAny(reply.Task, Task.Delay(ResponseTimeout, time, cancellationToken));
+            if (finished == reply.Task)
+            {
+                return await reply.Task;
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            logger.LogWarning("No reply from the server to {Command}", command);
+            return null;
+        }
+        finally
+        {
+            server.ConsoleOutput -= OnLine;
+        }
     }
 
     /// <summary>
